@@ -24,6 +24,11 @@ try:
 except ImportError:
     NetshortParser = None
 
+try:
+    from vigloo import ViglooParser
+except ImportError:
+    ViglooParser = None
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -36,10 +41,10 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 # Headers for specific sources
 SOURCE_HEADERS = {
-    "dramaflickreels.com": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://dramaflickreels.com/",
-        "Origin": "https://dramaflickreels.com"
+    "flickreels": {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://www.flickreels.net/",
+        "Origin": "https://www.flickreels.net/"
     }
 }
 
@@ -397,6 +402,57 @@ class SubtitleDetector:
         
         return None
 
+class LocalSubtitleFinder:
+    """Helper to find subtitles in local SUBTITLE_DIR"""
+    
+    @staticmethod
+    def find_subtitle(drama_title: str, episode_num: Union[int, str]) -> Optional[Path]:
+        """
+        Search for a local subtitle matching drama title and episode
+        """
+        from config import SUBTITLE_DIR
+        if not SUBTITLE_DIR.exists():
+            return None
+            
+        try:
+            # Clean title for matching
+            def clean(s):
+                # Remove special chars and spaces for robust matching
+                return re.sub(r'[^a-zA-Z0-9]', '', str(s).lower())
+            
+            clean_drama = clean(drama_title)
+            ep_str = str(episode_num).zfill(2)
+            
+            # Scan directory
+            for sub_file in SUBTITLE_DIR.glob("*.*"):
+                if sub_file.suffix.lower() not in ['.srt', '.vtt', '.ass']:
+                    continue
+                    
+                filename = sub_file.name.lower()
+                clean_filename = clean(filename)
+                
+                # Match logic:
+                # 1. Drama title (cleaned) is in filename (cleaned)
+                # 2. Episode number is in filename
+                
+                if clean_drama in clean_filename:
+                    # Check for episode patterns: E01, EP01, _01, 01.srt
+                    patterns = [
+                        f"e{ep_str}", f"ep{ep_str}", f"episode{ep_str}",
+                        f"_{ep_str}", f" {ep_str}", f"ep {ep_str}"
+                    ]
+                    
+                    if any(pattern in filename for pattern in patterns) or f"{ep_str}." in filename:
+                        logger.info(f"🔍 Found local subtitle match: {sub_file.name}")
+                        return sub_file
+                        
+            return None
+        except Exception as e:
+            logger.error(f"Error in LocalSubtitleFinder: {e}")
+            return None
+        
+        return None
+
     @staticmethod
     def get_progress_bar(percentage: float, length: int = 15) -> str:
         """
@@ -703,12 +759,26 @@ class JSONParser:
                                     subtitle_url = SubtitleDetector.get_subtitle_url(indo_sub)
                                     logger.info(f"Found Indonesian subtitle for episode {episode_num}")
                             
+                            # Extract qualities (Dramawave specific)
+                            qualities_map = {}
+                            if "external_audio_h264_m3u8" in item and item["external_audio_h264_m3u8"]:
+                                qualities_map[1080] = item["external_audio_h264_m3u8"]
+                            if "external_audio_h265_m3u8" in item and item["external_audio_h265_m3u8"]:
+                                # Prefer 265 if both exist? Or just map it.
+                                # Usually 265 is better quality or higher res.
+                                qualities_map[1081] = item["external_audio_h265_m3u8"] # Dummy high res
+                            if "video_url" in item and item["video_url"]:
+                                qualities_map[720] = item["video_url"]
+                            if "m3u8_url" in item and item["m3u8_url"]:
+                                qualities_map[721] = item["m3u8_url"]
+
                             if video_url:
                                 episodes.append({
                                     "episode": episode_num,
                                     "title": title,
                                     "url": video_url,
-                                    "subtitle_url": subtitle_url
+                                    "subtitle_url": subtitle_url,
+                                    "qualities_map": qualities_map
                                 })
             
             # Stardust format
@@ -724,11 +794,24 @@ class JSONParser:
                     subtitle_url = None
                     
                     if video_url:
+                        # Generic quality check if not already present
+                        qualities_map = ep_data.get("qualities_map", {})
+                        if not qualities_map and "qualities" in ep_data:
+                            qs = ep_data["qualities"]
+                            if isinstance(qs, list):
+                                for q in qs:
+                                    h = q.get("quality") or q.get("height")
+                                    u = q.get("videoPath") or q.get("url") or q.get("filePath")
+                                    if h and u:
+                                        try: qualities_map[int(h)] = u
+                                        except: pass
+
                         episodes.append({
                             "episode": ep_num,
                             "title": f"Episode {ep_num}",
                             "url": video_url,
-                            "subtitle_url": subtitle_url
+                            "subtitle_url": subtitle_url,
+                            "qualities_map": qualities_map
                         })
             
             # Meloshort format with subtitle detection
@@ -778,6 +861,13 @@ class JSONParser:
             # Netshort format
             elif "shortPlayEpisodeInfos" in data and NetshortParser:
                 parsed = NetshortParser.parse(data)
+                return parsed["episodes"]
+
+            # Vigloo format
+            elif ("payloads" in data or "payload" in data) and ViglooParser:
+                logger.info("Detected vigloo format")
+                parser = ViglooParser()
+                parsed = parser.parse(data)
                 return parsed["episodes"]
 
             # Goodshort format
@@ -1124,6 +1214,13 @@ class JSONParser:
     def _parse_vigloo(data: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         """Parse vigloo JSON format"""
         try:
+            if ViglooParser:
+                parser = ViglooParser()
+                parsed = parser.parse(data)
+                if parsed["episodes"]:
+                    ep = parsed["episodes"][0]
+                    return ep.get("url"), None
+            
             if "payload" in data and "url" in data["payload"]:
                 url = data["payload"]["url"]
                 return url, None

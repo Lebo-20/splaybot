@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+downloads/
+*.mp4
+*.mkv
+*.part
+*.txt
+!requirements.txt
+!telegraph_token.txt
+.vscode/
+.idea/

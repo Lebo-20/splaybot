@@ -1,19 +1,25 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Bot Configuration
-BOT_TOKEN = "8362327565:AAGrWixmH4ktkBVqk9ewGF-3oHViLZ2r8x8"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8388093985:AAG1BrNL_bLsPIhab4uSqZheYofii62Ut5M")
 ALLOWED_USERS = []  # Kosong = semua user diizinkan
+VIGLOO_TOKEN = os.getenv("VIGLOO_TOKEN", "5cf419a4c7fb1c8585314b9f797bf77e7b10a705f32c91aac65b901559780e12")
 
 # Pyrogram Configuration (MTProto Upload Cepat)
 # Isi API_ID dan API_HASH dari my.telegram.org untuk mengaktifkan upload Pyrogram
 # Jika dibiarkan 0 / "", bot akan menggunakan python-telegram-bot biasa (lambat)
-API_ID = 30653860
-API_HASH = "98e0a87077d4fc642ce183dfd7f46a19"
+API_ID = int(os.getenv("API_ID", 30653860))
+API_HASH = os.getenv("API_HASH", "98e0a87077d4fc642ce183dfd7f46a19")
 
 # Download Configuration
 DOWNLOAD_DIR = Path("downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
+DOWNLOAD_PROXY = None  # Contoh: "http://user:pass@host:port"
 
 # Aria2 Configuration
 ARIA2_HOST = "localhost"
@@ -99,7 +105,7 @@ FFMPEG_THREADS = 16
 DELETE_AFTER_UPLOAD = True
 
 # ============================================================
-# AUTO CLEANUP
+# AUTO CLEANUP & PERSISTENCE
 # ============================================================
 CLEANUP_DELAY    = 5
 CLEANUP_JSON     = True
@@ -107,6 +113,12 @@ CLEANUP_VIDEO    = True
 CLEANUP_SUBTITLE = True
 CLEANUP_OUTPUT   = True
 CLEANUP_ON_ERROR = True
+
+# Persistent Subtitle storage (Indonesian specialized)
+SUBTITLE_DIR = Path("subtitles/indonesian")
+SUBTITLE_DIR.mkdir(parents=True, exist_ok=True)
+COLLECT_SUBTITLES = True  # Keep Indonesian subtitles even after main cleanup
+SUBTITLE_REGISTRY_FILE = SUBTITLE_DIR / "subtitle_registry.json"
 
 # ============================================================
 # SESSION & CONCURRENCY

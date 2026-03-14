@@ -23,7 +23,7 @@ from config import (
     ENABLE_AUTO_COMPRESS, MIN_BITRATE, MAX_BITRATE, COMPRESSION_ATTEMPTS,
     VIDEO_CODEC, VIDEO_PROFILE, VIDEO_LEVEL, VIDEO_PRESET, VIDEO_TUNE,
     PIX_FMT, COLOR_PRIMARIES, COLOR_TRC, COLORSPACE, COLOR_RANGE,
-    X264_PARAMS, AUDIO_CODEC, MOVFLAGS, FFMPEG_THREADS
+    X264_PARAMS, AUDIO_CODEC, MOVFLAGS, FFMPEG_THREADS, DOWNLOAD_PROXY
 )
 
 try:
@@ -132,7 +132,8 @@ class OptimizedHLSDownloader:
                     url, 
                     headers=headers, 
                     allow_redirects=True,
-                    timeout=aiohttp.ClientTimeout(total=30)
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    proxy=DOWNLOAD_PROXY
                 ) as resp:
                     
                     if resp.status == 200:
@@ -540,11 +541,53 @@ class OptimizedHLSDownloader:
         except Exception:
             return 'unknown'
 
+    async def _merge_segments(self, segments: List[Path], output_path: Path) -> bool:
+        """Merge TS segments using binary concat"""
+        try:
+            with open(output_path, 'wb') as out_f:
+                for seg in sorted(segments, key=lambda p: p.name):
+                    with open(seg, 'rb') as in_f:
+                        out_f.write(in_f.read())
+            return output_path.exists() and output_path.stat().st_size > 0
+        except Exception as e:
+            logger.error(f"Binary merge failed: {e}")
+            return False
+
+    async def _merge_raw_ts(self, video_ts: Path, audio_ts: Optional[Path], output_path: Path) -> bool:
+        """Merge raw TS video and audio files if needed"""
+        if not audio_ts:
+            try:
+                shutil.copy(str(video_ts), str(output_path))
+                return True
+            except:
+                return False
+        
+        cmd = [
+            "ffmpeg", "-y",
+            "-i", str(video_ts),
+            "-i", str(audio_ts),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c", "copy",
+            "-f", "mpegts",
+            str(output_path)
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate()
+            return proc.returncode == 0 and output_path.exists()
+        except:
+            return False
+
+
     async def _merge_fmp4_segments(self, segments: List[Path], output_path: Path,
                                     audio_segments: Optional[List[Path]],
                                     progress_callback: Optional[Callable],
                                     user_id: Optional[int] = None,
-                                    output_format: str = "mp4") -> Optional[Path]:
+                                    output_format: str = "mp4",
+                                    subtitle_file: Optional[Path] = None,
+                                    burn_subtitle: bool = False) -> Optional[Path]:
         """
         Merge fragmented MP4 (fMP4) segments dengan 4 strategi fallback:
         1. ffmpeg concat demuxer (works for many fMP4 streams)
@@ -578,7 +621,7 @@ class OptimizedHLSDownloader:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                if user_id and self.task_tracker:
+                if user_id and getattr(self, 'task_tracker', None):
                     self.task_tracker.register_process(user_id, proc)
                 try:
                     if progress_callback:
@@ -606,6 +649,7 @@ class OptimizedHLSDownloader:
 
         # Helper: movflags hanya untuk MP4
         movflags_args = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
+        result: Optional[Path] = None
 
         # ── Strategi 1: ffmpeg concat demuxer + copy ─────────────────────────
         if has_sep_audio and concat_a:
@@ -622,94 +666,168 @@ class OptimizedHLSDownloader:
                 "-f", "concat", "-safe", "0", "-i", str(concat_v),
                 "-c", "copy"
             ] + movflags_args + [str(output_path)]
+        
         if await _run(cmd1, "concat demuxer + copy"):
-            return output_path
+            result = output_path
 
         # ── Strategi 2: concat demuxer + re-encode ────────────────────────────
-        if has_sep_audio and concat_a:
-            cmd2 = [
-                "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0", "-i", str(concat_v),
-                "-f", "concat", "-safe", "0", "-i", str(concat_a),
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                "-vf", "setpts=PTS-STARTPTS",
-                "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-            ] + movflags_args + [str(output_path)]
-        else:
-            cmd2 = [
-                "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0", "-i", str(concat_v),
-                "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                "-vf", "setpts=PTS-STARTPTS",
-                "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-            ] + movflags_args + [str(output_path)]
-        if await _run(cmd2, "concat demuxer + re-encode"):
-            return output_path
+        if not result:
+            if has_sep_audio and concat_a:
+                cmd2 = [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0", "-i", str(concat_v),
+                    "-f", "concat", "-safe", "0", "-i", str(concat_a),
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                    "-vf", "setpts=PTS-STARTPTS",
+                    "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                ] + movflags_args + [str(output_path)]
+            else:
+                cmd2 = [
+                    "ffmpeg", "-y",
+                    "-f", "concat", "-safe", "0", "-i", str(concat_v),
+                    "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                    "-vf", "setpts=PTS-STARTPTS",
+                    "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                ] + movflags_args + [str(output_path)]
+            if await _run(cmd2, "concat demuxer + re-encode"):
+                result = output_path
 
         # ── Strategi 3: Binary concat → ffmpeg copy ───────────────────────────
-        raw_video = temp_dir / "raw_fmp4_video.mp4"
-        raw_audio: Optional[Path] = None
-        try:
-            with open(raw_video, 'wb') as out_f:
-                for seg in sorted_video:
-                    with open(seg, 'rb') as in_f:
-                        out_f.write(in_f.read())
-            logger.info(f"[fMP4] Binary concat video: {raw_video.stat().st_size} bytes")
-        except Exception as e:
-            logger.error(f"[fMP4] Binary concat video failed: {e}")
-            return None
-
-        if has_sep_audio:
-            raw_audio = temp_dir / "raw_fmp4_audio.mp4"
+        if not result:
+            raw_video = temp_dir / "raw_fmp4_video.mp4"
+            raw_audio: Optional[Path] = None
+            bin_has_audio = False
             try:
-                with open(raw_audio, 'wb') as out_f:
-                    for seg in sorted_audio:
+                with open(raw_video, 'wb') as out_f:
+                    for seg in sorted_video:
                         with open(seg, 'rb') as in_f:
                             out_f.write(in_f.read())
-                logger.info(f"[fMP4] Binary concat audio: {raw_audio.stat().st_size} bytes")
+                logger.info(f"[fMP4] Binary concat video: {raw_video.stat().st_size} bytes")
+                
+                if has_sep_audio:
+                    raw_audio = temp_dir / "raw_fmp4_audio.mp4"
+                    try:
+                        with open(raw_audio, 'wb') as out_f:
+                            for seg in sorted_audio:
+                                with open(seg, 'rb') as in_f:
+                                    out_f.write(in_f.read())
+                        logger.info(f"[fMP4] Binary concat audio: {raw_audio.stat().st_size} bytes")
+                        bin_has_audio = raw_audio.exists() and raw_audio.stat().st_size > 0
+                    except Exception as e:
+                        logger.warning(f"[fMP4] Binary concat audio failed: {e}")
+                        raw_audio = None
+                
+                if bin_has_audio:
+                    cmd3 = [
+                        "ffmpeg", "-y",
+                        "-i", str(raw_video), "-i", str(raw_audio),
+                        "-map", "0:v:0", "-map", "1:a:0",
+                        "-c", "copy"
+                    ] + movflags_args + [str(output_path)]
+                else:
+                    cmd3 = [
+                        "ffmpeg", "-y", "-i", str(raw_video),
+                        "-c", "copy"
+                    ] + movflags_args + [str(output_path)]
+                
+                if await _run(cmd3, "binary concat + copy"):
+                    result = output_path
             except Exception as e:
-                logger.warning(f"[fMP4] Binary concat audio failed: {e}")
-                raw_audio = None
-
-        bin_has_audio = raw_audio and raw_audio.exists() and raw_audio.stat().st_size > 0
-        if bin_has_audio:
-            cmd3 = [
-                "ffmpeg", "-y",
-                "-i", str(raw_video), "-i", str(raw_audio),
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-c", "copy"
-            ] + movflags_args + [str(output_path)]
-        else:
-            cmd3 = [
-                "ffmpeg", "-y", "-i", str(raw_video),
-                "-c", "copy"
-            ] + movflags_args + [str(output_path)]
-        if await _run(cmd3, "binary concat + copy"):
-            return output_path
+                logger.error(f"[fMP4] Binary concat strategy failed: {e}")
 
         # ── Strategi 4: Binary concat → full re-encode ────────────────────────
-        if bin_has_audio:
-            cmd4 = [
-                "ffmpeg", "-y",
-                "-i", str(raw_video), "-i", str(raw_audio),
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                "-vf", "setpts=PTS-STARTPTS",
-                "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-            ] + movflags_args + [str(output_path)]
-        else:
-            cmd4 = [
-                "ffmpeg", "-y", "-i", str(raw_video),
-                "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                "-vf", "setpts=PTS-STARTPTS",
-                "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-            ] + movflags_args + [str(output_path)]
-        if await _run(cmd4, "binary concat + re-encode"):
-            return output_path
+        if not result and raw_video.exists():
+            bin_has_audio = raw_audio and raw_audio.exists() and raw_audio.stat().st_size > 0
+            if bin_has_audio:
+                cmd4 = [
+                    "ffmpeg", "-y",
+                    "-i", str(raw_video), "-i", str(raw_audio),
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                    "-vf", "setpts=PTS-STARTPTS",
+                    "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                ] + movflags_args + [str(output_path)]
+            else:
+                cmd4 = [
+                    "ffmpeg", "-y", "-i", str(raw_video),
+                    "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                    "-vf", "setpts=PTS-STARTPTS",
+                    "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                ] + movflags_args + [str(output_path)]
+            if await _run(cmd4, "binary concat + re-encode"):
+                result = output_path
 
-        logger.error("[fMP4] All 4 merge strategies failed")
-        return None
+        # ── Post-processing: Subtitles ────────────────────────────────────────
+        if result and subtitle_file and subtitle_file.exists():
+            final_output = temp_dir / f"fmp4_final_with_sub.{output_format.lower()}"
+            success = False
+            
+            if burn_subtitle:
+                logger.info("[fMP4] Burning subtitles into video...")
+                try:
+                    success = await self._burn_subtitle_to_video(
+                        result, subtitle_file, final_output, progress_callback
+                    )
+                except Exception as sub_err:
+                    logger.error(f"Burn subtitle error: {sub_err}")
+            else:
+                logger.info("[fMP4] Embedding subtitles (softsub)...")
+                try:
+                    success = await self._embed_subtitle(
+                        result, subtitle_file, final_output, progress_callback
+                    )
+                except Exception as sub_err:
+                    logger.error(f"Embed subtitle error: {sub_err}")
+            
+            if success and final_output.exists() and final_output.stat().st_size > 0:
+                if output_path.exists():
+                    try: output_path.unlink()
+                    except: pass
+                shutil.move(str(final_output), str(output_path))
+                logger.info("[fMP4] Subtitle processing completed successfully")
+                result = output_path
+            else:
+                logger.warning("[fMP4] Subtitle processing failed, using original video")
+
+        if not result:
+            logger.error("[fMP4] All 4 merge strategies failed")
+            return None
+
+        return result
+
+    async def _embed_subtitle(self, video_path: Path, subtitle_path: Path, 
+                              output_path: Path, progress_callback: Optional[Callable]) -> bool:
+        """Embed subtitle track into video file (Softsub)"""
+        try:
+            is_mp4 = output_path.suffix.lower() == ".mp4"
+            sub_codec = "mov_text" if is_mp4 else "copy"
+            
+            cmd = [
+                "ffmpeg", "-y",
+                "-i", str(video_path),
+                "-i", str(subtitle_path),
+                "-map", "0", "-map", "1",
+                "-c", "copy", f"-c:s", sub_codec,
+                "-disposition:s:0", "default",
+                str(output_path)
+            ]
+            
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
+            
+            if proc.returncode == 0 and output_path.exists():
+                return True
+            
+            err = stderr.decode('utf-8', errors='ignore')
+            logger.error(f"Embed subtitle failed: {err}")
+            return False
+        except Exception as e:
+            logger.error(f"Error embedding subtitle: {e}")
+            return False
+
 
     async def apply_variant(self, stream_info: HLSStreamInfo, chosen_label: str) -> bool:
         """
@@ -841,12 +959,12 @@ class OptimizedHLSDownloader:
 
             # Download subtitle jika diminta
             subtitle_file = None
-            if burn_subtitle:
+            if burn_subtitle or subtitle_url:
                 sub_url = subtitle_url
                 if not sub_url and stream_info.selected_subtitle:
                     sub_url = stream_info.selected_subtitle.get("url")
                 if sub_url:
-                    logger.info("📝 Downloading subtitle...")
+                    logger.info(f"📝 Downloading subtitle for mode {'burn' if burn_subtitle else 'embed'}...")
                     subtitle_file = await self.download_subtitle(sub_url, temp_dir / "subtitle.vtt")
 
             # ── Deteksi format segment ────────────────────────────────────────
@@ -860,101 +978,157 @@ class OptimizedHLSDownloader:
             if segment_fmt == 'fmp4':
                 # ── fMP4 path: binary concat + re-encode ──────────────────────
                 logger.info("🔧 Using fMP4 merge path...")
+                # Update: _merge_fmp4_segments now handles subtitles if provided
                 result = await self._merge_fmp4_segments(
-                    video_ts, temp_output, audio_ts, progress_callback, output_format=output_format
+                    video_ts, temp_output, audio_ts, progress_callback, 
+                    user_id=user_id, output_format=output_format,
+                    subtitle_file=subtitle_file, burn_subtitle=burn_subtitle
                 )
                 if not result:
                     logger.error("fMP4 merge failed completely")
                     return None
 
             else:
-                # ── MPEG-TS path: ffmpeg concat demuxer + setpts ──────────────
-                concat_file = temp_dir / "concat.txt"
-                async with aiofiles.open(concat_file, 'w') as f:
-                    for seg in sorted(video_ts, key=lambda p: p.name):
-                        await f.write(f"file '{seg.absolute()}'\n")
-
-                if audio_ts and len(audio_ts) > 0:
-                    audio_concat = temp_dir / "audio_concat.txt"
-                    async with aiofiles.open(audio_concat, 'w') as f:
-                        for seg in sorted(audio_ts, key=lambda p: p.name):
+                # ── MPEG-TS path: concat logic ───────────────────────────────
+                logger.info("🔧 Using TS merge path...")
+                
+                # Check if we have subtitles to merge/burn
+                if subtitle_file and subtitle_file.exists():
+                    if audio_ts and len(audio_ts) > 0:
+                        # Case: Video + Audio + Subtitle
+                        # We temporarily merge video/audio first OR do it all in one ffmpeg call
+                        # Let's use the helper _merge_video_audio_subtitle which is more robust
+                        
+                        # First, we need a single video file and single audio file from segments
+                        raw_v = temp_dir / "temp_video.ts"
+                        raw_a = temp_dir / "temp_audio.ts"
+                        
+                        v_ok = await self._merge_segments(video_ts, raw_v)
+                        a_ok = await self._merge_segments(audio_ts, raw_a)
+                        
+                        if v_ok and a_ok:
+                            success = await self._merge_video_audio_subtitle(
+                                raw_v, raw_a, subtitle_file, temp_output, progress_callback
+                            )
+                            if not success:
+                                logger.warning("Triple merge failed, falling back to video+audio only")
+                            else:
+                                result = temp_output
+                        
+                        if not temp_output.exists() or temp_output.stat().st_size == 0:
+                            # Fallback to standard merge
+                            audio_concat = temp_dir / "audio_concat.txt"
+                            async with aiofiles.open(audio_concat, 'w') as f:
+                                for seg in sorted(audio_ts, key=lambda p: p.name):
+                                    await f.write(f"file '{seg.absolute()}'\n")
+                            
+                            concat_file = temp_dir / "concat.txt"
+                            async with aiofiles.open(concat_file, 'w') as f:
+                                for seg in sorted(video_ts, key=lambda p: p.name):
+                                    await f.write(f"file '{seg.absolute()}'\n")
+                                    
+                            movflags_ts = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
+                            cmd = [
+                                "ffmpeg", "-y",
+                                "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                                "-f", "concat", "-safe", "0", "-i", str(audio_concat),
+                                "-c", "copy"
+                            ] + movflags_ts + [str(temp_output)]
+                            proc = await asyncio.create_subprocess_exec(*cmd)
+                            await proc.communicate()
+                    else:
+                        # Case: Video + Subtitle (no separate audio)
+                        raw_v = temp_dir / "temp_video.ts"
+                        if await self._merge_segments(video_ts, raw_v):
+                            success = await self._burn_subtitle_to_video(
+                                raw_v, subtitle_file, temp_output, progress_callback
+                            )
+                            if not success:
+                                # Fallback to simple conversion
+                                await self._convert_to_mp4(raw_v, temp_output, progress_callback)
+                else:
+                    # Original TS logic (no subtitle)
+                    concat_file = temp_dir / "concat.txt"
+                    async with aiofiles.open(concat_file, 'w') as f:
+                        for seg in sorted(video_ts, key=lambda p: p.name):
                             await f.write(f"file '{seg.absolute()}'\n")
 
-                    # movflags hanya untuk MP4
-                    movflags_ts = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
-                    cmd_b = [
-                        "ffmpeg", "-y",
-                        "-f", "concat", "-safe", "0", "-i", str(concat_file),
-                        "-f", "concat", "-safe", "0", "-i", str(audio_concat),
-                        "-vf", "setpts=PTS-STARTPTS", "-af", "aresample=async=1",
-                        "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                        "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-                        "-map", "0:v:0", "-map", "1:a:0",
-                    ] + movflags_ts + [str(temp_output)]
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd_b, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                    )
-                    if user_id and getattr(self, 'task_tracker', None):
-                        self.task_tracker.register_process(user_id, proc)
-                    try:
-                        if progress_callback:
-                            asyncio.create_task(self._monitor_ffmpeg_progress(proc, temp_output, progress_callback))
-                        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
-                    finally:
-                        if user_id and getattr(self, 'task_tracker', None):
-                            self.task_tracker.unregister_process(user_id, proc)
-                    if proc.returncode != 0 or not temp_output.exists() or temp_output.stat().st_size == 0:
-                        logger.warning("TS merge+audio failed, retry video-only...")
-                        if temp_output.exists():
-                            temp_output.unlink()
-                        audio_ts = None
+                    if audio_ts and len(audio_ts) > 0:
+                        audio_concat = temp_dir / "audio_concat.txt"
+                        async with aiofiles.open(audio_concat, 'w') as f:
+                            for seg in sorted(audio_ts, key=lambda p: p.name):
+                                await f.write(f"file '{seg.absolute()}'\n")
 
-                if not (audio_ts and len(audio_ts) > 0) or not temp_output.exists() or temp_output.stat().st_size == 0:
-                    movflags_ts2 = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
-                    cmd_a = [
-                        "ffmpeg", "-y",
-                        "-f", "concat", "-safe", "0", "-i", str(concat_file),
-                        "-vf", "setpts=PTS-STARTPTS", "-af", "aresample=async=1",
-                        "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
-                        "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
-                    ] + movflags_ts2 + [str(temp_output)]
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd_a, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                    )
-                    if user_id and getattr(self, 'task_tracker', None):
-                        self.task_tracker.register_process(user_id, proc)
-                    try:
-                        if progress_callback:
-                            asyncio.create_task(self._monitor_ffmpeg_progress(proc, temp_output, progress_callback))
-                        await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
-                    finally:
+                        movflags_ts = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
+                        cmd_b = [
+                            "ffmpeg", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                            "-f", "concat", "-safe", "0", "-i", str(audio_concat),
+                            "-vf", "setpts=PTS-STARTPTS", "-af", "aresample=async=1",
+                            "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                            "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                            "-map", "0:v:0", "-map", "1:a:0",
+                        ] + movflags_ts + [str(temp_output)]
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd_b, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                        )
                         if user_id and getattr(self, 'task_tracker', None):
-                            self.task_tracker.unregister_process(user_id, proc)
+                            self.task_tracker.register_process(user_id, proc)
+                        try:
+                            if progress_callback:
+                                asyncio.create_task(self._monitor_ffmpeg_progress(proc, temp_output, progress_callback))
+                            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
+                        finally:
+                            if user_id and getattr(self, 'task_tracker', None):
+                                self.task_tracker.unregister_process(user_id, proc)
 
-                if not temp_output.exists() or temp_output.stat().st_size == 0:
-                    # Fallback: copy-only merge tanpa re-encode
-                    logger.warning("TS re-encode merge failed, trying copy-only merge...")
-                    movflags_copy = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
-                    cmd_copy = [
-                        "ffmpeg", "-y",
-                        "-f", "concat", "-safe", "0", "-i", str(concat_file),
-                        "-c", "copy",
-                    ] + movflags_copy + [str(temp_output)]
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd_copy, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                    )
-                    if user_id and getattr(self, 'task_tracker', None):
-                        self.task_tracker.register_process(user_id, proc)
-                    try:
-                        _, stderr_copy = await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
-                    finally:
+                    if not (audio_ts and len(audio_ts) > 0) or not temp_output.exists() or temp_output.stat().st_size == 0:
+                        movflags_ts2 = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
+                        cmd_a = [
+                            "ffmpeg", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                            "-vf", "setpts=PTS-STARTPTS", "-af", "aresample=async=1",
+                            "-c:v", VIDEO_CODEC, "-profile:v", VIDEO_PROFILE, "-level:v", VIDEO_LEVEL, "-preset", VIDEO_PRESET, "-tune", VIDEO_TUNE, "-b:v", TARGET_VIDEO_BITRATE, "-maxrate", TARGET_VIDEO_MAXRATE, "-bufsize", TARGET_VIDEO_BUFSIZE, "-pix_fmt", PIX_FMT, "-color_primaries", COLOR_PRIMARIES, "-color_trc", COLOR_TRC, "-colorspace", COLORSPACE, "-color_range", COLOR_RANGE, "-x264-params", X264_PARAMS,
+                            "-c:a", AUDIO_CODEC, "-b:a", TARGET_AUDIO_BITRATE, "-ac", str(AUDIO_CHANNELS), "-ar", str(AUDIO_SAMPLE_RATE),
+                        ] + movflags_ts2 + [str(temp_output)]
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd_a, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                        )
                         if user_id and getattr(self, 'task_tracker', None):
-                            self.task_tracker.unregister_process(user_id, proc)
+                            self.task_tracker.register_process(user_id, proc)
+                        try:
+                            if progress_callback:
+                                asyncio.create_task(self._monitor_ffmpeg_progress(proc, temp_output, progress_callback))
+                            await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
+                        finally:
+                            if user_id and getattr(self, 'task_tracker', None):
+                                self.task_tracker.unregister_process(user_id, proc)
+
                     if not temp_output.exists() or temp_output.stat().st_size == 0:
-                        logger.error(f"Failed to create video (TS path) — copy-only also failed")
-                        if stderr_copy:
-                            logger.error(f"ffmpeg stderr: {stderr_copy.decode(errors='replace')[-500:]}")
-                        return None
+                        # Fallback: copy-only merge tanpa re-encode
+                        logger.warning("TS re-encode merge failed, trying copy-only merge...")
+                        movflags_copy = ["-movflags", MOVFLAGS] if output_format.lower() == "mp4" else []
+                        cmd_copy = [
+                            "ffmpeg", "-y",
+                            "-f", "concat", "-safe", "0", "-i", str(concat_file),
+                            "-c", "copy",
+                        ] + movflags_copy + [str(temp_output)]
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd_copy, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                        )
+                        if user_id and getattr(self, 'task_tracker', None):
+                            self.task_tracker.register_process(user_id, proc)
+                        try:
+                            _, stderr_copy = await asyncio.wait_for(proc.communicate(), timeout=PROCESSING_TIMEOUT)
+                        finally:
+                            if user_id and getattr(self, 'task_tracker', None):
+                                self.task_tracker.unregister_process(user_id, proc)
+                        if not temp_output.exists() or temp_output.stat().st_size == 0:
+                            logger.error(f"Failed to create video (TS path) — copy-only also failed")
+                            if stderr_copy:
+                                logger.error(f"ffmpeg stderr: {stderr_copy.decode(errors='replace')[-500:]}")
+                            return None
+
 
             # ── Validasi ─────────────────────────────────────────────────────
             if not temp_output.exists() or temp_output.stat().st_size == 0:
@@ -1025,7 +1199,7 @@ class OptimizedHLSDownloader:
                         # Fallback ke aria2c jika download direct sering gagal
                         # Namun untuk segment kecil, aiohttp lebih efisien
                         headers = self._build_headers(url)
-                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=SEGMENT_TIMEOUT)) as resp:
+                        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=SEGMENT_TIMEOUT), proxy=DOWNLOAD_PROXY) as resp:
                             if resp.status == 200:
                                 content = await resp.read()
                                 if content:
@@ -1151,7 +1325,7 @@ class OptimizedHLSDownloader:
             "-c:a", AUDIO_CODEC,
             "-b:a", TARGET_AUDIO_BITRATE,
             "-c:s", "mov_text",  # Embed subtitle sebagai track
-            "-metadata:s:s:0", "language=ind",
+            "-metadata:s:s:0", "language=id",
             "-metadata:s:s:0", "title=Indonesian",
             "-map", "0:v:0",
             "-map", "1:a:0",
@@ -1514,7 +1688,7 @@ class OptimizedHLSDownloader:
             session = await self._get_session()
             headers = self._build_headers(url)
             
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=headers, proxy=DOWNLOAD_PROXY) as resp:
                 if resp.status != 200:
                     return None
                 
@@ -1549,6 +1723,47 @@ class OptimizedHLSDownloader:
                 async with aiofiles.open(output_path, 'wb') as f:
                     await f.write(content)
                 
+                # Persistent copy for Indonesian subs (requested by user)
+                try:
+                    from config import SUBTITLE_DIR, COLLECT_SUBTITLES, SUBTITLE_REGISTRY_FILE
+                    import json
+                    from datetime import datetime
+                    
+                    if COLLECT_SUBTITLES:
+                        persistent_name = output_path.name
+                        # If output_path is generic "subtitle.vtt", try to use something better
+                        if persistent_name.startswith("subtitle"):
+                            persistent_name = f"sub_{int(asyncio.get_event_loop().time())}{suffix}"
+                        
+                        persistent_path = SUBTITLE_DIR / persistent_name
+                        async with aiofiles.open(persistent_path, 'wb') as f:
+                            await f.write(content)
+                        
+                        # Use JSON registry
+                        registry = {}
+                        if SUBTITLE_REGISTRY_FILE.exists():
+                            try:
+                                with open(SUBTITLE_REGISTRY_FILE, 'r', encoding='utf-8') as rf:
+                                    registry = json.load(rf)
+                            except:
+                                registry = {}
+                        
+                        # Record with "id" language code
+                        registry[persistent_name] = {
+                            "url": url,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "language": "id",
+                            "format": suffix.replace(".", ""),
+                            "file_path": str(persistent_path)
+                        }
+                        
+                        with open(SUBTITLE_REGISTRY_FILE, 'w', encoding='utf-8') as wf:
+                            json.dump(registry, wf, indent=4, ensure_ascii=False)
+                            
+                        logger.info(f"✅ Persistent subtitle and JSON registry entry saved: {persistent_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to save persistent subtitle copy or JSON registry: {e}")
+
                 logger.info(f"Subtitle downloaded: {output_path.name}")
                 return output_path
                 

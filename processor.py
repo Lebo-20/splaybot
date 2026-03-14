@@ -46,7 +46,7 @@ class VideoProcessor:
 
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(input_path),
+            "-i", str(input_path.absolute()),
             # Video stream
             "-vf", (
                 f"scale={TARGET_WIDTH}:{TARGET_HEIGHT}:flags=lanczos,"
@@ -77,10 +77,10 @@ class VideoProcessor:
             # Container
             "-movflags", MOVFLAGS,
             "-threads", str(FFMPEG_THREADS),
-            str(output_path)
+            str(output_path.absolute())
         ]
 
-        result = await self._run_ffmpeg(cmd, input_path.parent, output_path, user_id, progress_callback)
+        result = await self._run_ffmpeg(cmd, None, output_path, user_id, progress_callback)
 
         # Auto compress jika masih > TARGET_FILE_SIZE_MB
         if result and ENABLE_AUTO_COMPRESS:
@@ -120,7 +120,7 @@ class VideoProcessor:
 
             cmd = [
                 "ffmpeg", "-y",
-                "-i", str(input_path),
+                "-i", str(input_path.absolute()),
                 "-c:v", VIDEO_CODEC,
                 "-profile:v", VIDEO_PROFILE,
                 "-level:v", VIDEO_LEVEL,
@@ -139,10 +139,10 @@ class VideoProcessor:
                 "-ar", str(AUDIO_SAMPLE_RATE),
                 "-movflags", MOVFLAGS,
                 "-threads", str(FFMPEG_THREADS),
-                str(output_path)
+                str(output_path.absolute())
             ]
 
-            result = await self._run_ffmpeg(cmd, input_path.parent, output_path, user_id, progress_callback)
+            result = await self._run_ffmpeg(cmd, None, output_path, user_id, progress_callback)
             if result:
                 size_mb = result.stat().st_size / (1024 * 1024)
                 logger.info(f"📦 Compressed: {size_mb:.1f}MB")
@@ -178,88 +178,77 @@ class VideoProcessor:
 
             logger.info(f"💬 SRT ready: {srt_path.name}")
 
-            # ── MP4 Method 1: metadata bahasa + disposition default ──────────
-            cmd1 = [
+            # ── PRE-CHECK: Log existing streams ────────────────────────────
+            try:
+                probe_cmd = [
+                    "ffprobe", "-v", "quiet",
+                    "-show_entries", "stream=index,codec_type,codec_name",
+                    "-of", "csv=p=0",
+                    str(video_path.absolute())
+                ]
+                probe_proc = await asyncio.create_subprocess_exec(
+                    *probe_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await probe_proc.communicate()
+                streams_info = stdout.decode().strip().replace('\n', ' | ')
+                logger.info(f"🔍 Input streams: {streams_info}")
+            except Exception as probe_err:
+                logger.warning(f"⚠️ Pre-check ffprobe failed: {probe_err}")
+
+            # ── STEP 1: MP4 with mov_text (Standard) ───────────────────────
+            logger.info("🎬 Attempting Step 1: MP4 embedding (mov_text)...")
+            cmd_mp4 = [
                 "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-i", str(srt_path),
-                "-map", "0:v:0",
-                "-map", "0:a?",          # opsional — tidak gagal jika tidak ada audio
-                "-map", "1:0",
+                "-i", str(video_path.absolute()),
+                "-i", str(srt_path.absolute()),
+                "-map", "0:v",     # Map video from first input
+                "-map", "0:a?",    # Map audio if exists
+                "-map", "1",       # Map subtitle from second input
                 "-c:v", "copy",
                 "-c:a", "copy",
                 "-c:s", "mov_text",
                 "-metadata:s:s:0", "language=ind",
-                "-metadata:s:s:0", "title=Indonesian",
-                "-disposition:s:0", "default",
+                "-metadata:s:s:0", "title=Indonesia",
+                "-disposition:s:s:0", "default",
                 "-movflags", MOVFLAGS,
-                str(output_path),
+                str(output_path.absolute()),
             ]
-            result = await self._run_ffmpeg(cmd1, video_path.parent, output_path, user_id)
+            result = await self._run_ffmpeg(cmd_mp4, None, output_path, user_id)
             if result:
                 return result
 
-            # ── MP4 Method 2: tanpa metadata ────────────────────────────────
-            cmd2 = [
-                "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-i", str(srt_path),
-                "-map", "0:v",
-                "-map", "0:a?",
-                "-map", "1:0",
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-c:s", "mov_text",
-                "-movflags", MOVFLAGS,
-                str(output_path),
-            ]
-            result = await self._run_ffmpeg(cmd2, video_path.parent, output_path, user_id)
-            if result:
-                return result
-
-            # ── MP4 Method 3: tanpa map explicit, subtitle original ──────────
-            cmd3 = [
-                "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-i", str(subtitle_path),
-                "-c:v", "copy",
-                "-c:a", "copy",
-                "-c:s", "mov_text",
-                "-movflags", MOVFLAGS,
-                str(output_path),
-            ]
-            result = await self._run_ffmpeg(cmd3, video_path.parent, output_path, user_id)
-            if result:
-                return result
-
-            # ── MKV Fallback: SRT native, tidak butuh mov_text ──────────────
-            logger.warning("⚠️ Semua MP4 method gagal, mencoba MKV fallback...")
+            # ── STEP 2: MKV Fallback (SRT native) ──────────────────────────
+            logger.warning("⚠️ MP4 embedding failed, Attempting Step 2: MKV fallback...")
             mkv_output = output_path.with_suffix(".mkv")
-            cmd4 = [
+            cmd_mkv = [
                 "ffmpeg", "-y",
-                "-i", str(video_path),
-                "-i", str(srt_path),
+                "-i", str(video_path.absolute()),
+                "-i", str(srt_path.absolute()),
                 "-map", "0:v",
                 "-map", "0:a?",
-                "-map", "1:0",
-                "-c:v", "copy",
-                "-c:a", "copy",
+                "-map", "1",
+                "-c", "copy",
                 "-c:s", "srt",
                 "-metadata:s:s:0", "language=ind",
                 "-disposition:s:0", "default",
-                str(mkv_output),
+                str(mkv_output.absolute()),
             ]
-            result = await self._run_ffmpeg(cmd4, video_path.parent, mkv_output, user_id)
+            result = await self._run_ffmpeg(cmd_mkv, None, mkv_output, user_id)
             if result:
                 return result
 
-            # Semua gagal — kembalikan video original agar upload tetap jalan
-            logger.error("❌ Semua softsub method gagal, mengirim video tanpa subtitle")
-            return video_path
+            # ── STEP 3: FAILSAFES ──────────────────────────────────────────
+            # Semua gagal — kembalikan None agar caller (bot.py) mengirim file terpisah
+            logger.error("❌ Semua softsub method gagal. Mengirim video dan subtitle secara terpisah.")
+            if output_path.exists():
+                try: output_path.unlink()
+                except: pass
+            return None
 
         except Exception as e:
             logger.error(f"❌ embed_softsub exception: {e}")
-            return video_path  # selalu kembalikan sesuatu agar bot tidak crash
+            import traceback; traceback.print_exc()
+            return None
 
     # ------------------------------------------------------------------ #
     #  BURN SUBTITLE – Dengan 4 fallback methods                          #
@@ -342,54 +331,58 @@ class VideoProcessor:
         ]
 
     async def _burn_method_1(self, video_path, subtitle_path, output_path, user_id, cb):
-        """Method 1: subtitles filter dengan styling"""
+        """Method 1: subtitles filter dengan styling (robust escaping)"""
+        # For absolute paths on Windows in filters, we need special escaping
+        path_str = str(subtitle_path.absolute()).replace("\\", "/").replace(":", "\\:")
+        
         vf = (
-            f"subtitles={subtitle_path.name}:"
+            f"subtitles='{path_str}':"
             "force_style='FontName=Arial,FontSize=16,"
             "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
             "BorderStyle=3,Outline=1,Shadow=0,MarginV=20'"
         )
         cmd = (
-            ["ffmpeg", "-y", "-i", str(video_path), "-vf", vf]
+            ["ffmpeg", "-y", "-i", str(video_path.absolute()), "-vf", vf]
             + self._common_encode_flags()
-            + [str(output_path)]
+            + [str(output_path.absolute())]
         )
-        return await self._run_ffmpeg(cmd, video_path.parent, output_path, user_id, cb)
+        return await self._run_ffmpeg(cmd, None, output_path, user_id, cb)
 
     async def _burn_method_2(self, video_path, subtitle_path, output_path, user_id, cb):
-        """Method 2: subtitles filter, absolute path, no styling"""
-        vf = f"subtitles={str(subtitle_path)}"
+        """Method 2: subtitles filter, simple absolute path"""
+        path_str = str(subtitle_path.absolute()).replace("\\", "/").replace(":", "\\:")
+        vf = f"subtitles='{path_str}'"
         cmd = (
-            ["ffmpeg", "-y", "-i", str(video_path), "-vf", vf]
+            ["ffmpeg", "-y", "-i", str(video_path.absolute()), "-vf", vf]
             + self._common_encode_flags()
-            + [str(output_path)]
+            + [str(output_path.absolute())]
         )
-        return await self._run_ffmpeg(cmd, video_path.parent, output_path, user_id, cb)
+        return await self._run_ffmpeg(cmd, None, output_path, user_id, cb)
 
     async def _burn_method_3(self, video_path, subtitle_path, output_path, user_id, cb):
         """Method 3: ASS filter"""
-        vf = f"ass={subtitle_path}"
+        vf = f"ass='{subtitle_path.absolute()}'"
         cmd = (
-            ["ffmpeg", "-y", "-i", str(video_path), "-vf", vf]
+            ["ffmpeg", "-y", "-i", str(video_path.absolute()), "-vf", vf]
             + self._common_encode_flags()
-            + [str(output_path)]
+            + [str(output_path.absolute())]
         )
-        return await self._run_ffmpeg(cmd, video_path.parent, output_path, user_id, cb)
+        return await self._run_ffmpeg(cmd, None, output_path, user_id, cb)
 
     async def _burn_method_4(self, video_path, subtitle_path, output_path, user_id, cb):
         """Method 4: Copy codec + embed subtitle as mov_text track"""
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(video_path),
-            "-i", str(subtitle_path),
+            "-i", str(video_path.absolute()),
+            "-i", str(subtitle_path.absolute()),
             "-c:v", "copy",
             "-c:a", "copy",
             "-c:s", "mov_text",
             "-movflags", MOVFLAGS,
             "-threads", str(FFMPEG_THREADS),
-            str(output_path)
+            str(output_path.absolute())
         ]
-        return await self._run_ffmpeg(cmd, video_path.parent, output_path, user_id, cb)
+        return await self._run_ffmpeg(cmd, None, output_path, user_id, cb)
 
     def _run_ffmpeg_sync(self, cmd: list, label: str, output_path: Path) -> Optional[Path]:
         """Runner FFmpeg sinkron untuk dipakai di loop.run_in_executor"""
@@ -441,8 +434,9 @@ class VideoProcessor:
                     self.task_tracker.unregister_process(user_id, process)
 
             if process.returncode != 0:
-                err = stderr.decode('utf-8', errors='ignore')[:500]
-                logger.error(f"FFmpeg error (rc={process.returncode}): {err}")
+                err = stderr.decode('utf-8', errors='ignore')
+                logger.error(f"❌ FFmpeg error (rc={process.returncode}):")
+                logger.error(err)
                 return None
 
             if output_path.exists() and output_path.stat().st_size > 0:
@@ -466,8 +460,8 @@ class VideoProcessor:
                     stall_count = 0
                 else:
                     stall_count += 1
-                    if stall_count > 30:
-                        logger.warning("⚠️ FFmpeg stalled, terminating...")
+                    if stall_count > 60:
+                        logger.warning("⚠️ FFmpeg stalled (no file growth for 60s), terminating...")
                         process.terminate()
                         break
             await asyncio.sleep(1)
@@ -479,7 +473,7 @@ class VideoProcessor:
                 "ffprobe", "-v", "quiet",
                 "-show_entries", "format=duration",
                 "-of", "csv=p=0",
-                str(file_path)
+                str(file_path.absolute())
             ]
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -551,7 +545,7 @@ class VideoProcessor:
     async def _convert_to_ass(self, subtitle_path: Path) -> Optional[Path]:
         try:
             ass_path = subtitle_path.with_suffix('.ass')
-            cmd = ["ffmpeg", "-y", "-i", str(subtitle_path), str(ass_path)]
+            cmd = ["ffmpeg", "-y", "-i", str(subtitle_path.absolute()), str(ass_path.absolute())]
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )

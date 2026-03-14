@@ -28,6 +28,10 @@ from utils import (
     JSONParser, SubtitleDetector, FileCleanup,
     cleanup_file, format_size, logger
 )
+try:
+    from vigloo import ViglooParser
+except ImportError:
+    ViglooParser = None
 from task_tracker import TaskTracker
 
 # Conversation states
@@ -273,8 +277,13 @@ class DownloaderBot:
                 job_uuid = uuid.uuid4().hex[:6]
                 user_title = p["title"]
                 filename = f"{user_title}.{sel_fmt}"
-                video_path  = DOWNLOAD_DIR / f"{user_id}_{user_title}_{job_uuid}.{sel_fmt}"
-                output_path = DOWNLOAD_DIR / f"{user_id}_{user_title}_{job_uuid}_out.{sel_fmt}"
+                
+                # Gunakan user-specific directory
+                user_dir = DOWNLOAD_DIR / str(user_id)
+                user_dir.mkdir(parents=True, exist_ok=True)
+                
+                video_path  = user_dir / f"{user_title}_{job_uuid}.{sel_fmt}"
+                output_path = user_dir / f"{user_title}_{job_uuid}_out.{sel_fmt}"
 
                 if not self.uploader:
                     self.uploader = TelegramUploader(context.bot)
@@ -416,7 +425,7 @@ class DownloaderBot:
             "• Kompresi otomatis jika &gt; 50MB\n\n"
             "<b>━━ Batch Download: /batch ━━</b>\n"
             "Format: <code>/batch [judul] [link1] [link2] ...</code>\n"
-            "<b>Maksimal 100 link per perintah</b>\n\n"
+            "<b>Maksimal 200 link per perintah</b>\n\n"
             "Contoh:\n"
             "  <code>/batch Drama https://new.rishort.com/.../31001069305/playlist.m3u8 https://new.rishort.com/.../31001069306/playlist.m3u8</code>\n\n"
             "• Nama file otomatis: <b>Drama_Ep01.mp4</b>, <b>Drama_Ep02.mp4</b>, ...\n"
@@ -424,7 +433,7 @@ class DownloaderBot:
             "• Proses berurutan sesuai urutan link\n"
             "• Jika episode gagal → notifikasi error, lanjut ke episode berikutnya\n"
             "• Laporan ringkasan dikirim di akhir\n"
-            "• Jika &gt;100 link → bot menolak dan minta kirim batch berikutnya\n\n"
+            "• Jika &gt;200 link → bot menolak dan minta kirim batch berikutnya\n\n"
             "<b>━━ Pilihan Subtitle ━━</b>\n"
             "Jika subtitle terdeteksi, bot akan menawarkan:\n"
             "  1️⃣ Softsub (track embedded di video, bisa dimatikan)\n"
@@ -1496,365 +1505,33 @@ class DownloaderBot:
         
         if not self.uploader:
             self.uploader = TelegramUploader(context.bot)
-        
-        successful: int = 0
-        failed: int = 0
-        all_files_to_cleanup = []
-        
-        try:
-            for idx, episode_data in enumerate(selected_episodes, 1):
-                episode_num = episode_data['episode']
-                episode_title = episode_data['title']
-                video_url = episode_data['url']
-                subtitle_url = episode_data.get('subtitle_url')
-                
-                try:
-                    if is_batch:
-                        await self.uploader.update_message(
-                            user_id,
-                            status_msg.message_id,
-                            f"📥 <b>Downloading episode {idx}/{len(selected_episodes)}</b>\n"
-                            f"Episode: {episode_num}"
-                        )
-                except:
-                    pass
-                
-                # Isolated user folder
-                user_dir = DOWNLOAD_DIR / f"user_{user_id}"
-                user_dir.mkdir(parents=True, exist_ok=True)
-                
-                safe_title = "".join(c for c in drama_title if c.isalnum() or c in ' ._-')[:30]
-                safe_episode = f"EP{episode_num.zfill(2) if episode_num.isdigit() else episode_num}"
-                user_fmt = context.user_data.get("default_format", "mp4").lower()
-                user_res = context.user_data.get("default_resolution", "1080p")
-                
-                video_path = user_dir / f"{safe_title}_{safe_episode}.{user_fmt}"
-                subtitle_path = user_dir / f"{safe_title}_{safe_episode}.srt"
-                output_path = user_dir / f"{safe_title}_{safe_episode}_sub.{user_fmt}"
-                
-                episode_files = [video_path, subtitle_path, output_path]
-                all_files_to_cleanup.extend(episode_files)
-                
-                try:
-                    async def video_progress(current, total=None, speed=None, eta=None):
-                        if not is_batch:
-                            try:
-                                bar = JSONParser.get_progress_bar(current/total*100 if total else 0)
-                                speed_str = JSONParser.format_speed(speed) if speed else "N/A"
-                                eta_str = str(eta) if eta else "N/A"
-                                
-                                await self._safe_update(
-                                    user_id,
-                                    status_msg,
-                                    f"⬇️ <b>Downloading Episode {episode_num}...</b>\n\n"
-                                    f"<code>{bar}</code>\n"
-                                    f"🚀 <b>Speed:</b> {speed_str}\n"
-                                    f"⏳ <b>ETA:</b> {eta_str}"
-                                )
-                            except:
-                                pass
-                    
-                    # Gunakan download manager yang sudah di-update dengan HLS optimization
-                    downloaded_video = await asyncio.wait_for(
-                        self.download_manager.download_video(
-                            url=video_url, 
-                            output_path=video_path,
-                            user_id=user_id,
-                            progress_callback=video_progress if not is_batch else None,
-                            subtitle_mode="none",
-                            target_resolution=user_res,
-                            output_format=user_fmt
-                        ),
-                        timeout=DOWNLOAD_TIMEOUT
-                    )
-                    
-                    if not downloaded_video:
-                        failed += 1
-                        logger.error(f"Download failed for episode {episode_num}")
-                        # Hapus file untuk episode ini
-                        await FileCleanup.cleanup_episode_files(
-                            video_path=video_path if video_path.exists() else None,
-                            subtitle_path=subtitle_path if subtitle_path.exists() else None,
-                            output_path=output_path if output_path.exists() else None,
-                            delay=2
-                        )
-                        continue
-                        
-                except asyncio.TimeoutError:
-                    logger.error(f"Download timeout for episode {episode_num}")
-                    failed += 1
-                    await FileCleanup.cleanup_episode_files(
-                        video_path=video_path if video_path.exists() else None,
-                        delay=2
-                    )
-                    continue
-                except Exception as e:
-                    logger.error(f"Download error for episode {episode_num}: {e}")
-                    failed += 1
-                    await FileCleanup.cleanup_episode_files(
-                        video_path=video_path if video_path.exists() else None,
-                        delay=2
-                    )
-                    continue
-                
-                subtitle_file = None
-                if subtitle_url:
-                    try:
-                        await self.uploader.update_message(
-                            user_id,
-                            status_msg.message_id,
-                            f"⬇️ <b>Downloading subtitle Indonesia Episode {episode_num}...</b>"
-                        )
-                        
-                        subtitle_file = await self.download_manager.download_subtitle(
-                            subtitle_url, subtitle_path
-                        )
-                        
-                        if subtitle_file:
-                            logger.info(f"Subtitle downloaded for episode {episode_num}")
-                    except Exception as e:
-                        logger.warning(f"Subtitle download failed: {e}")
-                        if subtitle_path.exists():
-                            await FileCleanup.safe_delete(subtitle_path)
-                
-                # ── Tentukan mode subtitle per-episode ─────────────────────────
-                ep_subtitle_mode = episode_data.get('subtitle_mode', 'separate')  # default: terpisah
-                
-                final_video = downloaded_video
-                if subtitle_file:
-                    if ep_subtitle_mode == "softsub":
-                        # Embed subtitle sebagai soft track (mov_text) — bisa dimatikan
-                        try:
-                            await self.uploader.update_message(
-                                user_id,
-                                status_msg.message_id,
-                                f"💬 <b>Embedding softsub Episode {episode_num}...</b>"
-                            )
-                            processed_video = await asyncio.wait_for(
-                                self.video_processor.embed_softsub(
-                                    downloaded_video, subtitle_file, output_path, user_id
-                                ),
-                                timeout=PROCESSING_TIMEOUT
-                            )
-                            if processed_video:
-                                final_video = processed_video
-                                logger.info(f"Softsub embedded for episode {episode_num}")
-                            else:
-                                logger.warning(f"Softsub embedding failed, using original video")
-                                final_video = downloaded_video
-                        except Exception as e:
-                            logger.warning(f"Softsub embedding failed: {e}")
-                            final_video = downloaded_video
-
-                    elif ep_subtitle_mode == "embed":
-                        # Hardsub: burn subtitle ke dalam video
-                        try:
-                            await self.uploader.update_message(
-                                user_id,
-                                status_msg.message_id,
-                                f"🔥 <b>Burning hardsub Episode {episode_num}...</b>"
-                            )
-                            
-                            async def burn_progress(current):
-                                if not is_batch:
-                                    try:
-                                        await self.uploader.update_message(
-                                            user_id,
-                                            status_msg.message_id,
-                                            f"🔥 <b>Processing Episode {episode_num}...</b>\n"
-                                            f"Size: {format_size(current)}"
-                                        )
-                                    except:
-                                        pass
-                            
-                            processed_video = await asyncio.wait_for(
-                                self.video_processor.burn_subtitle(
-                                    downloaded_video, subtitle_file, output_path, user_id, burn_progress, "id"
-                                ),
-                                timeout=PROCESSING_TIMEOUT
-                            )
-                            
-                            if processed_video:
-                                final_video = processed_video
-                                logger.info(f"Subtitle burned for episode {episode_num}")
-                            else:
-                                logger.warning(f"Subtitle burning failed, using original video")
-                                final_video = downloaded_video
-                        except Exception as e:
-                            logger.warning(f"Subtitle burning failed: {e}")
-                            final_video = downloaded_video
-
-                    else:
-                        # separate/none: video tetap bersih
-                        logger.info(f"[sub-{ep_subtitle_mode}] Episode {episode_num}: video tanpa burn")
-                
-                # Cek format user
-                current_fmt = context.user_data.get("default_format", "mp4").lower()
-                if current_fmt == "mkv" and final_video.exists():
-                    try:
-                        mkv_path = DOWNLOAD_DIR / f"{final_video.stem}.mkv"
-                        await self.uploader.update_message(
-                            user_id, status_msg.message_id,
-                            f"⚙️ <b>Remuxing ke MKV Episode {episode_num}...</b>"
-                        )
-                        cmd = [
-                            "ffmpeg", "-y", "-i", str(final_video),
-                            "-c", "copy", str(mkv_path)
-                        ]
-                        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                        await proc.communicate()
-                        if proc.returncode == 0 and mkv_path.exists():
-                            all_files_to_cleanup.append(mkv_path)
-                            final_video = mkv_path
-                            logger.info(f"Remuxed to MKV for episode {episode_num}")
-                    except Exception as mkv_err:
-                        logger.warning(f"Remux to MKV failed: {mkv_err}")
-                
-                # Cek ukuran file sebelum upload
-                file_size_mb = final_video.stat().st_size / (1024 * 1024)
-                logger.info(f"Final video size: {file_size_mb:.2f} MB")
-
-                # ── Generate MediaInfo sebelum upload ─────────────────
-                mi_markup = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📊 MEDIA INFO", callback_data=f"mi|{final_video.name}")]
-                ])
-                try:
-                    mi_url = await self.video_processor.generate_mediainfo_report(final_video)
-                    if mi_url:
-                        mi_markup.inline_keyboard.append([InlineKeyboardButton("📈 Full Report", url=mi_url)])
-                except Exception as mi_err:
-                    logger.warning(f"[mediainfo] Gagal generate report: {mi_err}")
-                    logger.warning(f"[mediainfo] Gagal generate report: {mi_err}")
-                
-                try:
-                    # Unified upload — gunakan Pyrogram (MTProto, cepat) untuk semua
-                    async def ep_progress(current, total):
-                        try:
-                            pct = (current / total) * 100
-                            await self.uploader.update_message(
-                                user_id, status_msg.message_id,
-                                f"📤 <b>Uploading Ep {episode_num}</b>"
-                                f" ({idx}/{len(selected_episodes)})\n"
-                                f"Progress: {pct:.0f}%\n"
-                                f"Size: {format_size(current)}/{format_size(total)}"
-                            )
-                        except Exception:
-                            pass
-
-                    upload_ok = await self.uploader.upload_video(
-                        file_path=final_video,
-                        chat_id=user_id,
-                        title=drama_title,
-                        episode=episode_num,
-                        progress_callback=ep_progress,
-                        reply_markup=mi_markup
-                    )
-
-                    if upload_ok:
-                        successful = (successful or 0) + 1
-                    else:
-                        failed = (failed or 0) + 1
-                        logger.error(f"Upload gagal ep {episode_num}")
-                        continue
-                    
-                    # ── Kirim subtitle terpisah jika mode separate ────
-                    if ep_subtitle_mode == "separate" and subtitle_file and subtitle_file.exists():
-                        try:
-                            safe_sub_name = f"{safe_title}_{safe_episode}.id.srt"
-                            with open(subtitle_file, 'rb') as sub_f:
-                                await context.bot.send_document(
-                                    chat_id=user_id,
-                                    document=sub_f,
-                                    filename=safe_sub_name,
-                                    caption=f"📝 <b>Subtitle Indonesia</b> — {drama_title} Ep {episode_num}",
-                                    parse_mode="HTML"
-                                )
-                            logger.info(f"[sub-separate] Subtitle terkirim: {safe_sub_name}")
-                        except Exception as sub_err:
-                            logger.warning(f"[sub-separate] Gagal kirim subtitle: {sub_err}")
-
-                    # Update status progress
-                    try:
-                        progress_text = (
-                            f"✅ <b>Selesai: {idx}/{len(selected_episodes)}</b>\n"
-                            f"🎬 <b>{drama_title} Ep {episode_num}</b>"
-                        ) if is_batch else (
-                            f"✅ <b>Upload selesai</b>\n\n"
-                            f"🎬 {drama_title} Ep {episode_num}"
-                        )
-                        await context.bot.edit_message_text(
-                            chat_id=user_id,
-                            message_id=status_msg.message_id,
-                            text=progress_text,
-                            parse_mode="HTML"
-                        )
-                    except Exception:
-                        pass
-                    
-                except Exception as e:
-                    logger.error(f"Upload failed for episode {episode_num}: {e}")
-                    failed += 1
-                    continue
-                
-                # Cleanup episode files immediately after upload
-                if DELETE_AFTER_UPLOAD:
-                    await FileCleanup.cleanup_episode_files(
-                        video_path=video_path if video_path.exists() else None,
-                        subtitle_path=subtitle_path if subtitle_path.exists() else None,
-                        output_path=output_path if output_path.exists() else None,
-                        json_path=None,
-                        delay=2
-                    )
-                
-                if is_batch and idx < len(selected_episodes):
-                    await asyncio.sleep(3)
             
-            # Final status
-            if is_batch:
-                final_text = (
-                    f"✅ <b>Batch Download Selesai!</b>\n\n"
-                    f"Berhasil: {successful} episode\n"
-                    f"Gagal: {failed} episode\n\n"
-                    f"<i>Semua file telah dibersihkan</i>"
-                )
-                try:
-                    await self.uploader.update_message(
-                        user_id,
-                        status_msg.message_id,
-                        final_text
-                    )
-                except:
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=final_text,
-                        parse_mode="HTML"
-                    )
-            
-        except Exception as e:
-            logger.error(f"Error in batch processing: {e}")
-            try:
-                await self.uploader.update_message(
-                    user_id,
-                    status_msg.message_id,
-                    f"❌ <b>Error:</b> {str(e)}\n\n<i>Membersihkan file...</i>"
-                )
-            except:
-                pass
-        
-        finally:
-            # Bersihkan semua file dan session
-            await self._cleanup_user_session(user_id, context, "proses selesai")
-            
-            # Cleanup old files (more than 24 hours)
-            asyncio.create_task(FileCleanup.cleanup_old_files(DOWNLOAD_DIR, minutes=5))
-        
+        self.session_manager.set_progress_message(user_id, status_msg.message_id)
+
+        # Ambil pilihan user
+        sel_fmt = context.user_data.get("conf_format", context.user_data.get("default_format", "mp4"))
+        sel_res = context.user_data.get("conf_resolution", context.user_data.get("default_resolution", "1080p"))
+
+        asyncio.create_task(
+            self._process_episodes(
+                user_id=user_id,
+                selected_episodes=selected_episodes,
+                drama_title=drama_title,
+                json_path=json_path,
+                is_batch=is_batch,
+                status_msg=status_msg,
+                context=context,
+                output_format=sel_fmt,
+                target_resolution=sel_res,
+            )
+        )
         return ConversationHandler.END
     
 
     # =========================================================================
     # CONSTANTS
     # =========================================================================
-    MAX_BATCH_EPISODES = 100
+    MAX_BATCH_EPISODES = 200
 
     # =========================================================================
     # HELPERS
@@ -2191,10 +1868,10 @@ class DownloaderBot:
     # =========================================================================
     async def batch_download(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
-        /batch [judul_series] [link1] [link2] ... [linkN]   (maks 100 link)
+        /batch [judul_series] [link1] [link2] ... [linkN]   (maks 200 link)
 
         Alur:
-          1. Validasi argumen & URL (maks 100)
+          1. Validasi argumen & URL (maks 200)
           2. Pre-scan 3 link pertama untuk deteksi subtitle
           3a. Ada subtitle  → simpan pending → tanya user sekali → state AWAITING_BATCH_SUBTITLE
           3b. Tidak ada     → langsung mulai background task
@@ -2423,19 +2100,22 @@ class DownloaderBot:
                     _match = _re.search(r'(\d+)', target_resolution)
                     _target_h = int(_match.group(1)) if _match else 0
                     if _target_h > 0:
-                        available_heights = sorted(qualities_map.keys())
-                        if _target_h in qualities_map:
-                            video_url = qualities_map[_target_h]
+                        # Pastikan key adalah int untuk perbandingan
+                        q_map_int = {int(k): v for k, v in qualities_map.items()}
+                        available_heights = sorted(q_map_int.keys())
+                        
+                        if _target_h in q_map_int:
+                            video_url = q_map_int[_target_h]
                             logger.info(f"[quality] Episode {episode_num}: exact match {_target_h}p")
                         else:
                             candidates = [h for h in available_heights if h <= _target_h]
                             if candidates:
                                 best = max(candidates)
-                                video_url = qualities_map[best]
+                                video_url = q_map_int[best]
                                 logger.info(f"[quality] Episode {episode_num}: closest {best}p (target {_target_h}p)")
                             elif available_heights:
                                 best = min(available_heights)
-                                video_url = qualities_map[best]
+                                video_url = q_map_int[best]
                                 logger.info(f"[quality] Episode {episode_num}: lowest available {best}p")
 
                 try:
@@ -2451,11 +2131,16 @@ class DownloaderBot:
 
                 safe_title = "".join(c for c in drama_title if c.isalnum() or c in ' ._-')[:30]
                 safe_episode = f"EP{episode_num.zfill(2) if episode_num.isdigit() else episode_num}"
-                user_fmt = output_format
+                user_fmt = output_format.lower()
                 user_res = target_resolution
-                video_path = DOWNLOAD_DIR / f"{user_id}_{safe_title}_{safe_episode}.{user_fmt}"
-                subtitle_path = DOWNLOAD_DIR / f"{user_id}_{safe_title}_{safe_episode}.srt"
-                output_path = DOWNLOAD_DIR / f"{user_id}_{safe_title}_{safe_episode}_sub.{user_fmt}"
+                
+                # Gunakan user-specific directory
+                user_dir = DOWNLOAD_DIR / str(user_id)
+                user_dir.mkdir(parents=True, exist_ok=True)
+                
+                video_path = user_dir / f"{safe_title}_{safe_episode}.{user_fmt}"
+                subtitle_path = user_dir / f"{safe_title}_{safe_episode}.srt"
+                output_path = user_dir / f"{safe_title}_{safe_episode}_sub.{user_fmt}"
 
                 episode_files = [video_path, subtitle_path, output_path]
                 all_files_to_cleanup.extend(episode_files)
@@ -2605,7 +2290,7 @@ class DownloaderBot:
                 # ── Remux ke MKV jika format MKV dan file belum MKV ────────────
                 if user_fmt == "mkv" and final_video.exists() and final_video.suffix.lower() != ".mkv":
                     try:
-                        mkv_path = DOWNLOAD_DIR / f"{final_video.stem}.mkv"
+                        mkv_path = final_video.with_suffix(".mkv")
                         await self.uploader.update_message(
                             user_id, status_msg.message_id,
                             f"⚙️ <b>Remuxing ke MKV Episode {episode_num}...</b>"
@@ -2865,23 +2550,35 @@ class DownloaderBot:
                 await FileCleanup.safe_delete(downloaded_path, delay=2)
                 return False
 
-            # ── 3. Handle subtitle download jika mode separate/softsub ─────────
-            if subtitle_mode in ("separate", "softsub", "embed") and subtitle_url:
-                # Download subtitle file untuk semua mode yang perlu sub
-                try:
-                    await self._safe_update(
-                        user_id, status_msg,
-                        f"{batch_header}⬇️ <b>Mendownload subtitle:</b> {display_title}..."
-                    )
-                    sub_ext = ".vtt" if ".vtt" in subtitle_url.lower() else ".srt"
-                    sub_stem = video_path.stem
-                    subtitle_path = video_path.parent / f"{sub_stem}{sub_ext}"
+            # ── 3. Subtitle Handling ──────────────────────────────────────────
+            if subtitle_mode in ("separate", "softsub", "embed"):
+                # 1. Cek Local Subtitle Finder dulu (menggunakan display_title untuk tebak seri)
+                from utils import LocalSubtitleFinder
+                # Coba tebak drama_title dari display_title (biasanya "Drama Title EPxx")
+                guessed_title = display_title.rsplit(' ', 1)[0]
+                guessed_ep = display_title.rsplit(' ', 1)[-1].replace('Ep', '').replace('EP', '')
+                
+                local_sub = LocalSubtitleFinder.find_subtitle(guessed_title, guessed_ep)
+                if local_sub:
+                    subtitle_path = Path(local_sub).absolute()
+                    logger.info(f"[dl] ✅ Found local subtitle: {subtitle_path.name}")
+                
+                # 2. Download from URL if local not found
+                elif subtitle_url:
+                    try:
+                        await self._safe_update(
+                            user_id, status_msg,
+                            f"{batch_header}⬇️ <b>Mendownload subtitle:</b> {display_title}..."
+                        )
+                        sub_ext = ".vtt" if ".vtt" in subtitle_url.lower() else ".srt"
+                        sub_stem = video_path.stem
+                        subtitle_path = (video_path.parent / f"{sub_stem}{sub_ext}").absolute()
 
-                    subtitle_path = await self.download_manager.download_subtitle(
-                        subtitle_url, subtitle_path
-                    )
-                except Exception as e:
-                    logger.warning(f"[dl] Subtitle download error: {e}")
+                        subtitle_path = await self.download_manager.download_subtitle(
+                            subtitle_url, subtitle_path
+                        )
+                    except Exception as e:
+                        logger.warning(f"[dl] Subtitle download error: {e}")
 
             # ── 3b. Proses subtitle softsub/hardsub ───────────────────────────
             if subtitle_path and subtitle_path.exists():
@@ -2891,15 +2588,19 @@ class DownloaderBot:
                             user_id, status_msg,
                             f"{batch_header}💬 <b>Embedding softsub:</b> {display_title}..."
                         )
-                        softsub_out = output_path.with_suffix('.softsub.mp4')
+                        # Gunakan output_path yang valid
                         processed = await self.video_processor.embed_softsub(
-                            downloaded_path, subtitle_path, softsub_out, user_id
+                            downloaded_path, subtitle_path, output_path, user_id
                         )
-                        if processed:
+                        if processed and processed != downloaded_path:
                             downloaded_path = processed
-                            logger.info(f"[dl] Softsub embedded: {display_title}")
+                            logger.info(f"[dl] ✅ Softsub embedded: {display_title}")
+                        else:
+                            logger.warning(f"[dl] ❌ Softsub embedding gagal, fallback ke separate delivery")
+                            subtitle_mode = "separate"
                     except Exception as e:
-                        logger.warning(f"[dl] Softsub embedding failed: {e}")
+                        logger.warning(f"[dl] ❌ Softsub embedding failed: {e}")
+                        subtitle_mode = "separate"
                 elif subtitle_mode == "embed":
                     try:
                         await self._safe_update(
@@ -2911,26 +2612,28 @@ class DownloaderBot:
                         )
                         if processed:
                             downloaded_path = processed
-                            logger.info(f"[dl] Hardsub burned: {display_title}")
+                            logger.info(f"[dl] ✅ Hardsub burned: {display_title}")
                     except Exception as e:
-                        logger.warning(f"[dl] Hardsub burning failed: {e}")
+                        logger.warning(f"[dl] ❌ Hardsub burning failed: {e}")
 
             # ── 4. Rename ke nama file yang diinginkan user ───────────────────
-            target_path = downloaded_path.parent / filename
+            target_path = (downloaded_path.parent / filename).absolute()
             if downloaded_path != target_path:
                 try:
+                    if target_path.exists():
+                        target_path.unlink()
                     downloaded_path.rename(target_path)
                     downloaded_path = target_path
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"[dl] Gagal rename ke {filename}: {e}")
 
-            # ── 5. Generate MediaInfo sebelum upload ──────────────────────────
+            # ── 5. Generate MediaInfo ──────────────────────────
             mi_markup = None
             try:
                 mi_url = await self.video_processor.generate_mediainfo_report(downloaded_path)
                 if mi_url:
                     mi_markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📊 MediaInfo", url=mi_url)]
+                        [InlineKeyboardButton("📊 MEDIA INFO", url=mi_url)]
                     ])
                     logger.info(f"[dl] MediaInfo link: {mi_url}")
             except Exception as mi_err:
@@ -2943,8 +2646,6 @@ class DownloaderBot:
             upload_msg = f"{batch_header}📤 <b>Mengupload:</b> {display_title}\n"
             upload_msg += f"📁 <b>File:</b> {filename}\n"
             upload_msg += f"📦 <b>Ukuran:</b> {format_size(file_size)}"
-            if file_size_mb > TARGET_FILE_SIZE_MB:
-                upload_msg += f"\n<i>💡 Telah dikompres dari {file_size_mb:.1f}MB</i>"
             
             await self._safe_update(user_id, status_msg, upload_msg)
 
@@ -2964,30 +2665,30 @@ class DownloaderBot:
             )
 
             if not upload_ok:
-                logger.error(f"[dl] Upload gagal: {display_title}")
+                logger.error(f"[dl] ❌ Upload gagal: {display_title}")
                 await self._safe_update(
                     user_id, status_msg,
                     f"{batch_header}❌ <b>{display_title}</b> — upload gagal.\nSilakan coba lagi."
                 )
                 return False
 
-            # ── 7. Kirim subtitle terpisah jika dipilih ───────────────────────
+            # ── 7. Kirim subtitle terpisah jika dipilih/fallback ───────────────────────
             if subtitle_mode == "separate" and subtitle_path and subtitle_path.exists():
                 try:
-                    sub_filename = Path(filename).stem + subtitle_path.suffix
+                    sub_filename = Path(filename).stem + ".id" + subtitle_path.suffix
                     with open(subtitle_path, "rb") as sf:
                         await self.uploader.bot.send_document(
                             chat_id=user_id,
                             document=sf,
                             filename=sub_filename,
-                            caption=f"📄 <b>Subtitle:</b> {sub_filename}",
+                            caption=f"📄 <b>Subtitle Indonesia:</b> {sub_filename}",
                             parse_mode="HTML",
                         )
-                    logger.info(f"[dl] Subtitle terpisah dikirim: {sub_filename}")
+                    logger.info(f"[dl] ✅ Subtitle terpisah dikirim: {sub_filename}")
                 except Exception as e:
                     logger.warning(f"[dl] Gagal kirim subtitle terpisah: {e}")
 
-            logger.info(f"[dl] Upload OK: {display_title}")
+            logger.info(f"[dl] ✅ Upload OK: {display_title}")
             if cleanup_session:
                 await self._safe_update(
                     user_id, status_msg,
@@ -3048,8 +2749,10 @@ class DownloaderBot:
                 safe_series = self._sanitize_filename(series_title)
                 ep_filename  = f"{safe_series}_{ep_label}.{output_format}"
                 job_uuid    = uuid.uuid4().hex[:6]
-                video_path  = DOWNLOAD_DIR / f"{user_id}_{safe_series}_{ep_label}_{job_uuid}.{output_format}"
-                output_path = DOWNLOAD_DIR / f"{user_id}_{safe_series}_{ep_label}_{job_uuid}_out.{output_format}"
+                user_dir    = DOWNLOAD_DIR / str(user_id)
+                user_dir.mkdir(parents=True, exist_ok=True)
+                video_path  = (user_dir / f"{safe_series}_{ep_label}_{job_uuid}.{output_format}").absolute()
+                output_path = (user_dir / f"{safe_series}_{ep_label}_{job_uuid}_out.{output_format}").absolute()
 
                 # ── Deteksi subtitle untuk episode ini ───────────────────────
                 episode_subtitle_url = ""

@@ -5,7 +5,7 @@ from typing import Optional, Callable, List, Dict
 from urllib.parse import urlparse
 
 from utils import logger, get_headers
-from config import CLEANUP_ON_ERROR
+from config import CLEANUP_ON_ERROR, DOWNLOAD_PROXY
 from hls_downloader import OptimizedHLSDownloader, HLSStreamInfo
 
 from task_tracker import TaskTracker
@@ -59,7 +59,7 @@ class DownloadManager:
                         user_id=user_id,
                         progress_callback=progress_callback,
                         burn_subtitle=burn_subtitle,
-                        subtitle_url=subtitle_url if burn_subtitle else None,
+                        subtitle_url=subtitle_url if subtitle_mode != "none" else None,
                         output_format=hls_format
                     )
                     if result and result.exists():
@@ -67,7 +67,11 @@ class DownloadManager:
                     logger.warning("Internal HLS downloader failed, trying yt-dlp...")
                 
                 # Method 2: yt-dlp fallback untuk HLS
-                result = await self._download_with_ytdlp(url, output_path, user_id, progress_callback, is_hls=True, output_format=output_format, headers=req_headers)
+                result = await self._download_with_ytdlp(
+                    url, output_path, user_id, progress_callback, 
+                    is_hls=True, output_format=output_format, 
+                    headers=req_headers, target_resolution=target_resolution
+                )
                 if result:
                     return result
                 
@@ -78,19 +82,24 @@ class DownloadManager:
                 # Regular file download
                 logger.info(f"🎬 Detected regular file: {url[:100]}")
                 
-                # Step 1: aria2c turbo download
+                # Step 1: yt-dlp primary
+                logger.info("🎬 Trying yt-dlp as primary download engine...")
+                result = await self._download_with_ytdlp(
+                    url, output_path, user_id, progress_callback, 
+                    is_hls=False, output_format=output_format, 
+                    headers=req_headers, target_resolution=target_resolution
+                )
+                if result:
+                    return result
+                
+                # Step 2: aria2c turbo fallback
+                logger.warning("yt-dlp failed, trying aria2c turbo fallback...")
                 result = await self._download_aria2_turbo(url, output_path, user_id, progress_callback, req_headers, output_format=output_format)
                 if result:
                     return result
                 
-                # Step 2: yt-dlp fallback
-                logger.warning("aria2c turbo failed, trying yt-dlp fallback...")
-                result = await self._download_with_ytdlp(url, output_path, user_id, progress_callback, is_hls=False, output_format=output_format, headers=req_headers)
-                if result:
-                    return result
-                
                 # Step 3: Python requests fallback streaming download
-                logger.warning("yt-dlp failed, trying requests streaming fallback...")
+                logger.warning("aria2c failed, trying requests streaming fallback...")
                 return await self._download_streaming_requests(url, output_path, user_id, progress_callback, req_headers, output_format=output_format)
                 
         except Exception as e:
@@ -102,13 +111,13 @@ class DownloadManager:
                                    progress_callback: Optional[Callable],
                                    is_hls: bool = False,
                                    output_format: str = "mp4",
-                                   headers: Optional[Dict] = None) -> Optional[Path]:
+                                   headers: Optional[Dict] = None,
+                                   target_resolution: str = "1080p") -> Optional[Path]:
         """Download menggunakan yt-dlp library dengan advanced options"""
         try:
             logger.info(f"🎬 Trying yt-dlp direct library: {url[:100]}")
             
-            if output_format.lower() == "mkv" and output_path.suffix.lower() != ".mkv":
-                output_path = output_path.with_suffix(".mkv")
+            # Capture the current loop to use in the progress hook
 
             # Capture the current loop to use in the progress hook
             loop = asyncio.get_running_loop()
@@ -125,16 +134,39 @@ class DownloadManager:
                         pass
 
             # Setup options
+            # Convert target_resolution to height (e.g. "1080p" -> 1080)
+            target_height = 1080
+            import re as _re
+            _res_match = _re.search(r'(\d+)', target_resolution)
+            if _res_match:
+                target_height = int(_res_match.group(1))
+
+            # Quality format selection logic
+            if is_hls:
+                # Optimized for HLS: select specific height if possible
+                fmt_str = (
+                    f"bestvideo[height<={target_height}][ext={output_format}]+bestaudio[ext=m4a]/"
+                    f"bestvideo[height<={target_height}]+bestaudio/"
+                    f"best[height<={target_height}][ext={output_format}]/"
+                    f"best[height<={target_height}]/"
+                    f"best"
+                )
+            else:
+                # Regular video quality selection
+                fmt_str = (
+                    f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]/best"
+                )
+
             ydl_opts = {
-                "format": f"bestvideo[ext={output_format}]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext={output_format}]/best" if is_hls else f"best[ext={output_format}]/best",
+                "format": fmt_str,
                 "outtmpl": str(output_path),
                 "noplaylist": True,
                 "quiet": True,
                 "no_warnings": True,
                 "merge_output_format": output_format,
                 "http_headers": {
-                    "User-Agent": headers.get('User-Agent', "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"),
-                    "Referer": headers.get('Referer', "https://dramaflickreels.com"),
+                    "User-Agent": headers.get('User-Agent', "Mozilla/5.0"),
+                    "Referer": headers.get('Referer', "https://www.flickreels.net/"),
                     "Accept": "*/*"
                 },
                 "extractor_args": {
@@ -148,6 +180,10 @@ class DownloadManager:
                 "concurrent_fragment_downloads": 10,
                 "progress_hooks": [ydl_progress_hook],
             }
+
+            if DOWNLOAD_PROXY:
+                ydl_opts["proxy"] = DOWNLOAD_PROXY
+                logger.info(f"🌐 Using proxy for yt-dlp: {DOWNLOAD_PROXY}")
 
             # Add cookies if exists
             cookies_file = Path("cookies.txt")
@@ -189,9 +225,6 @@ class DownloadManager:
             if not headers:
                 headers = get_headers(url)
 
-            if output_format.lower() == "mkv" and output_path.suffix.lower() != ".mkv":
-                output_path = output_path.with_suffix(".mkv")
-
             req_headers = {
                 "User-Agent": headers.get('User-Agent', "Mozilla/5.0"),
                 "Referer": headers.get('Referer', url),
@@ -203,7 +236,7 @@ class DownloadManager:
             timeout = aiohttp.ClientTimeout(total=3600, connect=30)
             
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                async with session.get(url, headers=req_headers, allow_redirects=True) as resp:
+                async with session.get(url, headers=req_headers, allow_redirects=True, proxy=DOWNLOAD_PROXY) as resp:
                     if resp.status != 200:
                         logger.warning(f"Direct HTTP failed: status {resp.status}")
                         return None
@@ -250,6 +283,10 @@ class DownloadManager:
                 "-i", url,
                 "-c", "copy"
             ]
+            
+            if DOWNLOAD_PROXY:
+                cmd.insert(1, "-http_proxy")
+                cmd.insert(2, DOWNLOAD_PROXY)
             
             if output_format.lower() == "mp4":
                cmd.extend(["-movflags", "+faststart"])
@@ -368,6 +405,9 @@ class DownloadManager:
                 "-o", output_path.name,
                 url
             ]
+            
+            if DOWNLOAD_PROXY:
+                cmd.extend(["--all-proxy", DOWNLOAD_PROXY])
             
             if headers:
                 for key, value in headers.items():
