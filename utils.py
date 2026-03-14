@@ -620,7 +620,7 @@ class JSONParser:
         
         try:
             # ── Dotdrama format ────────────────────────────────────────────────
-            if "dgiv" in data and isinstance(data["dgiv"], dict):
+            if "dgiv" in data and isinstance(data["dgiv"], dict) and "ebeer" in data["dgiv"]:
                 dgiv = data["dgiv"]
                 drama_info = dgiv.get("bswitc", {})
                 drama_title = drama_info.get("nseri", "Drama")
@@ -631,7 +631,6 @@ class JSONParser:
                     pphys = item.get("pphys", [])
                     video_url = None
                     if pphys:
-                        # Mopp or Bcold
                         video_url = pphys[0].get("Mopp") or pphys[0].get("Bcold")
                     
                     if video_url:
@@ -642,8 +641,9 @@ class JSONParser:
                             "subtitle_url": None,
                             "source": "dotdrama"
                         })
-                episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
-                return episodes
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
 
             # ── Pocinca format ─────────────────────────────────────────────────
             if "series" in data and "videos" in data and isinstance(data["videos"], list):
@@ -661,8 +661,9 @@ class JSONParser:
                             "subtitle_url": None,
                             "source": "pocinca"
                         })
-                episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
-                return episodes
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
 
             # ── Velolo format ──────────────────────────────────────────────────
             if "videoInfo" in data and "episodesInfo" in data:
@@ -683,8 +684,9 @@ class JSONParser:
                             "has_subtitle": bool(subtitle_url),
                             "source": "velolo"
                         })
-                episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
-                return episodes
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
 
             # ── Shortmax format ───────────────────────────────────────────────
             if ("shortPlayId" in data or "shortPlayName" in data or "episodes" in data) and ShortmaxParser:
@@ -750,214 +752,159 @@ class JSONParser:
                 except Exception as e:
                     logger.warning(f"ViglooParser error: {e}")
 
-            # Dramabox v2 format (dengan array episodes)
-            if "data" in data and "episodes" in data["data"] and isinstance(data["data"]["episodes"], list):
+            # ── Dramabox v2 format ───────────────────────────────────────────
+            if "data" in data and isinstance(data["data"], dict) and "episodes" in data["data"] and isinstance(data["data"]["episodes"], list):
                 book_data = data["data"]
-                book_name = book_data.get("bookName", "Drama")
-                episodes_list = book_data.get("episodes", [])
-                
-                logger.info(f"Detected dramabox v2 format with {len(episodes_list)} episodes")
-                
-                for idx, episode in enumerate(episodes_list):
-                    chapter_index = episode.get("chapterIndex", idx)
-                    episode_num = str(chapter_index + 1)  # Convert 0-based to 1-based
-                    
-                    # Extract video URL dari qualities
-                    video_url = None
-                    qualities = episode.get("qualities", [])
-                    qualities_map = {}  # {height: url} — simpan semua quality
-                    
+                drama_title = book_data.get("bookName", "Drama")
+                ep_list = book_data.get("episodes", [])
+                logger.info(f"Detected dramabox v2 format with {len(ep_list)} episodes")
+                for idx, item in enumerate(ep_list):
+                    ep_num = str(item.get("chapterIndex", idx) + 1)
+                    v_url = None
+                    qualities = item.get("qualities", [])
                     if qualities:
-                        for q in qualities:
-                            q_height = q.get("quality")
-                            q_path = q.get("videoPath")
-                            if q_height and q_path:
-                                qualities_map[int(q_height)] = q_path
-                        
-                        # Pilih kualitas terbaik sebagai default
-                        for quality in [1080, 720, 540, 480, 360]:
-                            if quality in qualities_map:
-                                video_url = qualities_map[quality]
-                                logger.info(f"Episode {episode_num}: Default {quality}p video")
+                        for target in [1080, 720, 480]:
+                            found = next((q["videoPath"] for q in qualities if q.get("quality") == target), None)
+                            if found:
+                                v_url = found
                                 break
-                        
-                        # Fallback ke kualitas pertama
-                        if not video_url and len(qualities) > 0:
-                            video_url = qualities[0].get("videoPath")
+                        if not v_url: v_url = qualities[0].get("videoPath")
                     
-                    # Fallback ke URL langsung
-                    if not video_url:
-                        video_url = episode.get("url")
-                    
-                    # Cari subtitle
-                    subtitle_url = None
-                    subtitles = episode.get("subtitles", [])
-                    if subtitles:
-                        indo_sub = SubtitleDetector.find_indonesian_subtitle(subtitles)
-                        if indo_sub:
-                            subtitle_url = SubtitleDetector.get_subtitle_url(indo_sub)
-                            if subtitle_url:
-                                logger.info(f"Episode {episode_num}: Found Indonesian subtitle")
-                    
-                    # Dapatkan cover image jika ada
-                    cover_url = episode.get("cover", "")
-                    
-                    if video_url:
-                        episodes.append({
-                            "episode": episode_num,
-                            "title": f"Episode {episode_num}",
-                            "drama_title": book_name,
-                            "url": video_url,
-                            "subtitle_url": subtitle_url,
-                            "cover_url": cover_url,
-                            "has_subtitle": subtitle_url is not None,
-                            "qualities_map": qualities_map,  # {height: url}
-                        })
-            
-            # Dramabox format
-            elif "data" in data and "list" in data["data"]:
-                episode_list = data["data"]["list"]
-                if isinstance(episode_list, list):
-                    for idx, item in enumerate(episode_list):
-                        if not isinstance(item, dict): continue
-                        episode_num = item.get("chapterName", str(idx + 1))
-                        episode_num = re.sub(r'[^0-9]', '', episode_num) or str(idx + 1)
-                        
-                        # Get video URL
-                        video_url = None
-                        if "cdn" in item and item["cdn"]:
-                            video_url = item["cdn"]
-                        elif "multiVideos" in item and len(item["multiVideos"]) > 0:
-                            for vid in item["multiVideos"]:
-                                if vid.get("type") == "720p" and vid.get("filePath"):
-                                    video_url = vid["filePath"]
-                                    break
-                            if not video_url:
-                                video_url = item["multiVideos"][0].get("filePath")
-                        
-                        subtitle_url = None
-                        
-                        if video_url:
-                            episodes.append({
-                                "episode": episode_num,
-                                "title": f"Episode {episode_num}",
-                                "url": video_url,
-                                "subtitle_url": subtitle_url
-                            })
-            
-            # Dramawave format with subtitle detection
-            elif "data" in data and "info" in data["data"]:
-                info = data["data"]["info"]
-                if "episode_list" in info:
-                    episode_list = info["episode_list"]
-                    if isinstance(episode_list, list):
-                        for idx, item in enumerate(episode_list):
-                            if not isinstance(item, dict): continue
-                            episode_num = str(item.get("index", idx + 1))
-                            title = item.get("name", f"Episode {episode_num}")
-                            
-                            if "external_audio_h264_m3u8" in item and item["external_audio_h264_m3u8"]:
-                                video_url = item["external_audio_h264_m3u8"]
-                            elif "external_audio_h265_m3u8" in item and item["external_audio_h265_m3u8"]:
-                                video_url = item["external_audio_h265_m3u8"]
-                            elif "video_url" in item and item["video_url"]:
-                                video_url = item["video_url"]
-                            elif "m3u8_url" in item and item["m3u8_url"]:
-                                video_url = item["m3u8_url"]
-                            
-                            # Get Indonesian subtitle
-                            subtitle_url = None
-                            subs = item.get("subtitle_list")
-                            if isinstance(subs, list) and len(subs) > 0:
-                                indo_sub = SubtitleDetector.find_indonesian_subtitle(subs)
-                                if indo_sub:
-                                    subtitle_url = SubtitleDetector.get_subtitle_url(indo_sub)
-                                    logger.info(f"Found Indonesian subtitle for episode {episode_num}")
-                            
-                            # Extract qualities (Dramawave specific)
-                            qualities_map = {}
-                            if "external_audio_h264_m3u8" in item and item["external_audio_h264_m3u8"]:
-                                qualities_map[1080] = item["external_audio_h264_m3u8"]
-                            if "external_audio_h265_m3u8" in item and item["external_audio_h265_m3u8"]:
-                                # Prefer 265 if both exist? Or just map it.
-                                # Usually 265 is better quality or higher res.
-                                qualities_map[1081] = item["external_audio_h265_m3u8"] # Dummy high res
-                            if "video_url" in item and item["video_url"]:
-                                qualities_map[720] = item["video_url"]
-                            if "m3u8_url" in item and item["m3u8_url"]:
-                                qualities_map[721] = item["m3u8_url"]
+                    if not v_url: v_url = item.get("url")
 
-                            if video_url:
-                                episodes.append({
-                                    "episode": episode_num,
-                                    "title": title,
-                                    "url": video_url,
-                                    "subtitle_url": subtitle_url,
-                                    "qualities_map": qualities_map
-                                })
-            
-            # Stardust format
-            elif "data" in data and "episodes" in data["data"] and isinstance(data["data"]["episodes"], dict):
-                episodes_dict = data["data"]["episodes"]
-                for ep_num, ep_data in episodes_dict.items():
-                    video_url = None
-                    if "h264" in ep_data:
-                        video_url = ep_data["h264"]
-                    elif "h265" in ep_data:
-                        video_url = ep_data["h265"]
-                    
-                    subtitle_url = None
-                    
-                    if video_url:
-                        # Generic quality check if not already present
-                        qualities_map = ep_data.get("qualities_map", {})
-                        if not qualities_map and "qualities" in ep_data:
-                            qs = ep_data["qualities"]
-                            if isinstance(qs, list):
-                                for q in qs:
-                                    h = q.get("quality") or q.get("height")
-                                    u = q.get("videoPath") or q.get("url") or q.get("filePath")
-                                    if h and u:
-                                        try: qualities_map[int(h)] = u
-                                        except: pass
+                    sub_url = None
+                    subs = item.get("subtitles", [])
+                    if subs:
+                        indo = SubtitleDetector.find_indonesian_subtitle(subs)
+                        if indo: sub_url = SubtitleDetector.get_subtitle_url(indo)
 
+                    if v_url:
                         episodes.append({
                             "episode": ep_num,
                             "title": f"Episode {ep_num}",
-                            "url": video_url,
-                            "subtitle_url": subtitle_url,
-                            "qualities_map": qualities_map
+                            "drama_title": drama_title,
+                            "url": v_url,
+                            "subtitle_url": sub_url,
+                            "source": "dramabox_v2"
                         })
-            
-            # Meloshort format with subtitle detection
-            elif "data" in data and "drama_title" in data["data"]:
-                d = data["data"]
-                if "chapters" in d and isinstance(d["chapters"], list):
-                    for chapter in d["chapters"]:
-                        episode_num = str(chapter.get("chapter_index", chapter.get("index", 1)))
-                        video_url = chapter.get("play_url")
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
+
+            # ── Dramabox v1 format ───────────────────────────────────────────
+            if "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
+                items = data["data"]["list"]
+                if items and isinstance(items, list) and any("cdn" in it or "multiVideos" in it for it in items if isinstance(it, dict)):
+                    logger.info(f"Detected dramabox v1 format")
+                    for idx, item in enumerate(items):
+                        if not isinstance(item, dict): continue
+                        ep_num = re.sub(r'[^0-9]', '', str(item.get("chapterName", idx+1))) or str(idx+1)
+                        v_url = item.get("cdn")
+                        if not v_url and item.get("multiVideos"):
+                            v_url = item["multiVideos"][0].get("filePath")
                         
-                        subtitle_url = None
-                        if "sublist" in chapter and len(chapter["sublist"]) > 0:
-                            indo_sub = SubtitleDetector.find_indonesian_subtitle(chapter["sublist"])
-                            if indo_sub:
-                                subtitle_url = SubtitleDetector.get_subtitle_url(indo_sub)
-                        
-                        if video_url:
+                        if v_url:
                             episodes.append({
-                                "episode": episode_num,
-                                "title": f"Episode {episode_num}",
-                                "url": video_url,
-                                "subtitle_url": subtitle_url
+                                "episode": ep_num,
+                                "title": f"Episode {ep_num}",
+                                "url": v_url,
+                                "source": "dramabox_v1"
                             })
-                else:
-                    episode_num = str(d.get("chapter_index", d.get("index", 1)))
-                    video_url = d.get("play_url")
-                    
-                    subtitle_url = None
-                    if "sublist" in d and len(d["sublist"]) > 0:
-                        indo_sub = SubtitleDetector.find_indonesian_subtitle(d["sublist"])
-                        if indo_sub:
+                    if episodes:
+                        episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                        return episodes
+
+            # ── Flikreels format ─────────────────────────────────────────────
+            if "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
+                items = data["data"]["list"]
+                if items and isinstance(items, list) and any("hls_url" in it for it in items if isinstance(it, dict)):
+                    logger.info(f"Detected flikreels format")
+                    for idx, item in enumerate(items):
+                        if not isinstance(item, dict): continue
+                        ep_num = str(item.get("chapter_num", idx + 1))
+                        v_url = item.get("hls_url")
+                        if v_url:
+                            episodes.append({
+                                "episode": ep_num,
+                                "title": item.get("chapter_title", f"Episode {ep_num}"),
+                                "url": v_url,
+                                "source": "flikreels"
+                            })
+                    if episodes:
+                        episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                        return episodes
+
+            # ── Dramawave / Freereels ────────────────────────────────────────
+            if "episode_list" in data or ("data" in data and isinstance(data["data"], dict) and "info" in data["data"] and "episode_list" in data["data"]["info"]):
+                ep_list = data.get("episode_list")
+                drama_title = "Drama"
+                if not ep_list:
+                    info = data["data"]["info"]
+                    ep_list = info.get("episode_list", [])
+                    drama_title = info.get("name", "Drama")
+                
+                if isinstance(ep_list, list):
+                    logger.info(f"Detected dramawave/freereels format with {len(ep_list)} episodes")
+                    for idx, item in enumerate(ep_list):
+                        ep_num = str(item.get("index", idx + 1))
+                        v_url = item.get("external_audio_h264_m3u8") or item.get("video_url") or item.get("m3u8_url") or item.get("url")
+                        sub_url = None
+                        subs = item.get("subtitle_list")
+                        if subs:
+                            indo = SubtitleDetector.find_indonesian_subtitle(subs)
+                            if indo: sub_url = SubtitleDetector.get_subtitle_url(indo)
+                        
+                        if v_url:
+                            episodes.append({
+                                "episode": ep_num,
+                                "title": item.get("name", f"Episode {ep_num}"),
+                                "drama_title": drama_title,
+                                "url": v_url,
+                                "subtitle_url": sub_url,
+                                "source": "freereels"
+                            })
+                    if episodes:
+                        episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                        return episodes
+
+            # ── Goodshort format ─────────────────────────────────────────────
+            if "videos" in data and isinstance(data["videos"], list):
+                logger.info(f"Detected goodshort format")
+                for idx, item in enumerate(data["videos"]):
+                    name = item.get("name", str(idx + 1))
+                    ep_num = re.search(r'(\d+)', name).group(1) if re.search(r'(\d+)', name) else str(idx + 1)
+                    v_url = item.get("url")
+                    if v_url:
+                        episodes.append({
+                            "episode": ep_num,
+                            "title": f"Episode {ep_num}",
+                            "url": v_url,
+                            "source": "goodshort"
+                        })
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
+
+            # ── Stardust format ──────────────────────────────────────────────
+            if "data" in data and isinstance(data["data"], dict) and "episodes" in data["data"] and isinstance(data["data"]["episodes"], dict):
+                logger.info("Detected stardust format")
+                for ep_num, ep_data in data["data"]["episodes"].items():
+                    v_url = ep_data.get("h264") or ep_data.get("h265")
+                    if v_url:
+                        episodes.append({
+                            "episode": str(ep_num),
+                            "title": f"Episode {ep_num}",
+                            "url": v_url,
+                            "source": "stardust"
+                        })
+                if episodes:
+                    episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
+                    return episodes
+
+            # ── Meloshort format ─────────────────────────────────────────────
+            is_melo = ("drama_title" in data.get("data", {}) or "chapters" in data.get("data", {}))
+            if is_melo:
+                d = data["data"]
                             subtitle_url = SubtitleDetector.get_subtitle_url(indo_sub)
                     
                     if video_url:
