@@ -234,20 +234,40 @@ class TelegramUploader:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2)
     
-    async def update_message(self, chat_id: int, message_id: int, text: str):
-        """Edit existing message with retry mechanism"""
+    async def update_message(self, chat_id: int, message_id: int, text: str, reply_markup=None):
+        """Edit existing message (text or photo caption) with retry mechanism"""
         for attempt in range(self.max_retries):
             try:
+                # Coba edit sebagai teks biasa
                 await self.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
                     text=text,
                     parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
                     read_timeout=30,
                     write_timeout=30,
                     connect_timeout=30
                 )
                 return
+            except Exception as e:
+                # Jika error karena message ini adalah foto/media, gunakan edit_caption
+                if "There is no text in the message" in str(e) or "Message can't be edited" in str(e):
+                    try:
+                        await self.bot.edit_message_caption(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            caption=text,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=reply_markup
+                        )
+                        return
+                    except Exception:
+                        pass
+                
+                logger.warning(f"Failed to update message (attempt {attempt + 1}): {e}")
+                if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2)
             except TimedOut:
                 logger.warning(f"Timeout updating message (attempt {attempt + 1})")
                 if attempt < self.max_retries - 1:
