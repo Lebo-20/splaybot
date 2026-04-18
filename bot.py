@@ -2502,21 +2502,19 @@ class DownloaderBot:
             async def dl_progress(current_bytes: int):
                 try:
                     if is_hls_stream:
-                        # Untuk HLS, current_bytes adalah jumlah segmen yang sudah di download
-                        await self.uploader.update_message(
-                            target_chat, status_msg.message_id,
+                        text = (
                             f"{batch_header}"
                             f"📥 <b>Downloading: {display_title}</b>\n"
                             f"📦 Progress: {current_bytes} segmen\n"
                             f"<i>💡 Optimizing with parallel download</i>"
                         )
                     else:
-                        await self.uploader.update_message(
-                            target_chat, status_msg.message_id,
+                        text = (
                             f"{batch_header}"
                             f"📥 <b>Downloading: {display_title}</b>\n"
                             f"📦 Size: {format_size(current_bytes)}"
                         )
+                    await self.uploader.update_message(target_chat, status_msg.message_id, text)
                 except Exception:
                     pass
 
