@@ -9,3 +9,5 @@ psutil==5.9.6
 urllib3==2.1.0
 yt-dlp==2024.12.13
 python-dotenv==1.0.1
+pyrogram==2.0.106
+tgcrypto==1.2.5
