@@ -894,7 +894,20 @@ class DownloaderBot:
             "Ketik <b>BATAL</b> untuk membatalkan\n\n"
             "<i>File akan otomatis dihapus setelah selesai</i>"
         )
-        await update.message.reply_text(choice_text, parse_mode="HTML")
+        # Tampilkan cover jika ada (Anti-Spam Visual)
+        cover = context.user_data.get("cover")
+        if cover:
+            try:
+                await update.message.reply_photo(
+                    photo=cover,
+                    caption=choice_text,
+                    parse_mode="HTML"
+                )
+            except:
+                await update.message.reply_text(choice_text, parse_mode="HTML")
+        else:
+            await update.message.reply_text(choice_text, parse_mode="HTML")
+        
         return AWAITING_BATCH_CHOICE
 
     async def handle_softsub_choice(
