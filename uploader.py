@@ -25,7 +25,7 @@ class TelegramUploader:
                     api_id=API_ID,
                     api_hash=API_HASH,
                     bot_token=BOT_TOKEN,
-                    in_memory=True, # No need for session file since we use Bot Token
+                    in_memory=True, 
                     workers=4
                 )
                 logger.info("🚀 Pyrogram client ready for ultra-fast uploads.")
@@ -46,7 +46,6 @@ class TelegramUploader:
                         logger.error(f"File too large: {file_size} bytes")
                         return False
                     
-                    # Cek if Pyrogram is enabled for FAST MTProto upload
                     if self.pyrogram_app:
                         if not getattr(self.pyrogram_app, "is_connected", False):
                             await self.pyrogram_app.start()
@@ -66,7 +65,6 @@ class TelegramUploader:
                         if episode:
                             caption += f"📺 Episode: {episode}\n"
                             
-                        # Convert ptb reply_markup to Pyrogram format
                         pyro_markup = None
                         if reply_markup:
                             try:
@@ -105,10 +103,9 @@ class TelegramUploader:
                                 reply_markup=pyro_markup,
                                 reply_to_message_id=message_thread_id if message_thread_id else None
                             )
-                        logger.info(f"🚀 Pyrogram Upload completed for {file_path} ({'MKV doc' if is_mkv else 'MP4 video'})")
+                        logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
                         return True
 
-                    # Fallback to python-telegram-bot HTTP standard upload
                     tracker = ProgressTracker(file_size, progress_callback)
                     await tracker.start()
                     
@@ -124,10 +121,6 @@ class TelegramUploader:
                                 document=InputFile(video_file, filename=file_path.name),
                                 caption=caption,
                                 parse_mode=ParseMode.HTML,
-                                read_timeout=600,
-                                write_timeout=600,
-                                connect_timeout=600,
-                                pool_timeout=600,
                                 reply_markup=reply_markup,
                                 message_thread_id=message_thread_id
                             )
@@ -138,152 +131,49 @@ class TelegramUploader:
                                 caption=caption,
                                 supports_streaming=True,
                                 parse_mode=ParseMode.HTML,
-                                read_timeout=600,
-                                write_timeout=600,
-                                connect_timeout=600,
-                                pool_timeout=600,
                                 reply_markup=reply_markup,
                                 message_thread_id=message_thread_id
                             )
-                        
-                    logger.info(f"Upload completed for {file_path}")
                     return True
-                    
-            except TimedOut:
-                logger.warning(f"Upload timeout for {file_path} (attempt {attempt + 1})")
-                if attempt < self.max_retries - 1:
-                    wait_time = (attempt + 1) * 5
-                    logger.info(f"Retrying in {wait_time} seconds...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.error(f"Upload failed after {self.max_retries} attempts")
-                    return False
-                    
-            except RetryAfter as e:
-                logger.warning(f"Rate limited. Waiting {e.retry_after} seconds")
-                await asyncio.sleep(e.retry_after)
-                
-            except NetworkError as e:
-                logger.error(f"Network error during upload: {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(5)
-                else:
-                    return False
-                    
             except Exception as e:
-                logger.error(f"Upload failed for {file_path}: {e}")
+                logger.error(f"Upload failed: {e}")
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(5)
                 else:
                     return False
-        
         return False
     
-    async def upload_with_progress(self, file_path: Path, chat_id: int, title: str, episode: str,
-                                  update_callback: Callable, reply_markup=None, message_thread_id: Optional[int] = None) -> bool:
-        """Upload with progress updates"""
-        async def progress_callback(current, total):
-            percentage = (current / total) * 100
-            speed = format_speed(current / (1 if current > 0 else 1))
-            try:
-                await update_callback(
-                    f"📤 <b>Uploading...</b>\n"
-                    f"Progress: {percentage:.1f}%\n"
-                    f"Size: {format_size(current)}/{format_size(total)}\n"
-                    f"Speed: {speed}"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to update progress: {e}")
-            
-        return await self.upload_video(file_path, chat_id, title, episode, progress_callback, 
-                                       reply_markup=reply_markup, message_thread_id=message_thread_id)
-    
-    async def send_error(self, chat_id: int, error_msg: str, message_thread_id: Optional[int] = None):
-        """Send error message to user with retry"""
-        for attempt in range(self.max_retries):
-            try:
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"❌ <b>Error</b>\n{error_msg}",
-                    parse_mode=ParseMode.HTML,
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30
-                )
-                return
-            except Exception as e:
-                logger.warning(f"Failed to send error message (attempt {attempt + 1}): {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2)
-    
-    async def send_status(self, chat_id: int, message: str, message_thread_id: Optional[int] = None):
-        """Send status message with retry"""
-        for attempt in range(self.max_retries):
-            try:
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=message,
-                    parse_mode=ParseMode.HTML,
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30
-                )
-                return
-            except Exception as e:
-                logger.warning(f"Failed to send status (attempt {attempt + 1}): {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2)
-    
     async def update_message(self, chat_id: int, message_id: int, text: str, reply_markup=None):
-        """Edit existing message (text or photo caption) with retry mechanism"""
+        """Edit or Resend message if not found (Smart Resend)"""
         for attempt in range(self.max_retries):
             try:
-                # Coba edit sebagai teks biasa
                 await self.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=reply_markup,
-                    read_timeout=30,
-                    write_timeout=30,
-                    connect_timeout=30
+                    chat_id=chat_id, message_id=message_id, text=text,
+                    parse_mode=ParseMode.HTML, reply_markup=reply_markup
                 )
                 return
             except Exception as e:
-                # Jika error karena message ini adalah foto/media, gunakan edit_caption
-                if "There is no text in the message" in str(e) or "Message can't be edited" in str(e):
+                error_str = str(e).lower()
+                # Jika pesan hilang/dihapus (404), kirim pesan baru (Smart Resend)
+                if "not found" in error_str or "message can't be found" in error_str:
+                    try:
+                        return await self.bot.send_message(
+                            chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+                        )
+                    except: return
+                
+                # Jika pesan adalah foto (caption)
+                if "no text" in error_str or "can't be edited" in error_str:
                     try:
                         await self.bot.edit_message_caption(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            caption=text,
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=reply_markup
+                            chat_id=chat_id, message_id=message_id, caption=text,
+                            parse_mode=ParseMode.HTML, reply_markup=reply_markup
                         )
                         return
-                    except Exception:
-                        pass
-                
-                logger.warning(f"Failed to update message (attempt {attempt + 1}): {e}")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2)
-            except TimedOut:
-                logger.warning(f"Timeout updating message (attempt {attempt + 1})")
-                if attempt < self.max_retries - 1:
-                    await asyncio.sleep(2)
-            except Exception as e:
-                if "not modified" in str(e).lower():
-                    return
-                logger.warning(f"Failed to update message (attempt {attempt + 1}): {e}")
+                    except: pass
+
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2)
                 else:
-                    try:
-                        await self.bot.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            parse_mode=ParseMode.HTML
-                        )
-                    except:
-                        pass
+                    if "not modified" not in error_str:
+                        logger.warning(f"Failed to update message: {e}")
