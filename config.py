@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Bot Configuration
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8388093985:AAG1BrNL_bLsPIhab4uSqZheYofii62Ut5M")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8687157077:AAGhlvyD6y6JMSQ5hbsYpOruUNSKF_ukaSA")
 ALLOWED_USERS = []  # Kosong = semua user diizinkan
 VIGLOO_TOKEN = os.getenv("VIGLOO_TOKEN", "5cf419a4c7fb1c8585314b9f797bf77e7b10a705f32c91aac65b901559780e12")
 
