@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 import logging
 
@@ -25,7 +25,14 @@ class UserSession:
     progress_message_id: Optional[int] = None
     chat_id: Optional[int] = None
     message_thread_id: Optional[int] = None
+    # Daftar pesan yang dikirim bot selama session ini (untuk dihapus di akhir)
+    all_message_ids: List[int] = field(default_factory=list)
     
+    def add_message(self, message_id: int):
+        """Add message ID to the list of messages to be cleaned up later"""
+        if message_id and message_id not in self.all_message_ids:
+            self.all_message_ids.append(message_id)
+
     def is_expired(self) -> bool:
         """Check if session has expired"""
         return datetime.now() - self.last_activity > timedelta(seconds=SESSION_TIMEOUT)
@@ -74,20 +81,28 @@ class SessionManager:
             session.update_activity()
         return session
     
-    def delete_session(self, user_id: int):
-        """Delete user session"""
+    async def delete_session(self, user_id: int, bot=None):
+        """Delete user session and cleanup its messages if bot is provided"""
         if user_id in self.sessions:
+            session = self.sessions[user_id]
+            
+            # Jika bot disediakan, hapus semua pesan status yang ada di session ini
+            if bot and session.all_message_ids:
+                chat_id = session.chat_id or user_id
+                logger.info(f"Stealth Mode: Cleaning up {len(session.all_message_ids)} messages for user {user_id}")
+                for msg_id in session.all_message_ids:
+                    try:
+                        await bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                    except Exception as e:
+                        logger.debug(f"Failed to delete status message {msg_id}: {e}")
+            
             logger.info(f"Deleted session for user {user_id}")
             del self.sessions[user_id]
     
-    def force_cleanup_session(self, user_id: int) -> bool:
-        """
-        Force cleanup session tanpa cek apapun
-        Returns True jika session ada dan dihapus
-        """
+    async def force_cleanup_session(self, user_id: int, bot=None) -> bool:
+        """Force cleanup session and its messages"""
         if user_id in self.sessions:
-            logger.info(f"Force cleanup session for user {user_id}")
-            del self.sessions[user_id]
+            await self.delete_session(user_id, bot)
             return True
         return False
     
@@ -112,6 +127,12 @@ class SessionManager:
             session.status = status
             session.update_activity()
     
+    def track_message(self, user_id: int, message_id: int):
+        """Add message to session tracking for later cleanup"""
+        session = self.get_session(user_id)
+        if session:
+            session.add_message(message_id)
+
     def update_session_info(self, user_id: int, title: str = None, episode: str = None, 
                            subtitle_yes_no: str = None):
         """Update session with user provided info"""
@@ -130,10 +151,11 @@ class SessionManager:
             session.update_activity()
     
     def set_progress_message(self, user_id: int, message_id: int):
-        """Set progress message ID for updates"""
+        """Set progress message ID and track it"""
         session = self.get_session(user_id)
         if session:
             session.progress_message_id = message_id
+            session.add_message(message_id)
             logger.info(f"Set progress message for user {user_id}: {message_id}")
     
     def update_session_direct(self, user_id: int, title: str, episode: str, has_subtitle: bool):
