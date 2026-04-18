@@ -1642,6 +1642,8 @@ class DownloaderBot:
           3b. Tidak ada     → langsung mulai download sebagai background task
         """
         user_id = update.effective_user.id
+        try: await update.message.delete()
+        except: pass
 
         if ALLOWED_USERS and user_id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Anda tidak diizinkan menggunakan bot ini.")
@@ -1870,6 +1872,8 @@ class DownloaderBot:
           3b. Tidak ada     → langsung mulai background task
         """
         user_id = update.effective_user.id
+        try: await update.message.delete()
+        except: pass
 
         if ALLOWED_USERS and user_id not in ALLOWED_USERS:
             await update.message.reply_text("⛔ Anda tidak diizinkan menggunakan bot ini.")
