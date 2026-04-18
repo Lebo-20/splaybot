@@ -289,18 +289,21 @@ class DownloaderBot:
                     self.uploader = TelegramUploader(context.bot)
 
                 status_msg = await context.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=update.effective_chat.id,
                     text=f"📥 <b>Download dimulai</b>\n"
                          f"🎬 <b>Judul:</b> {user_title}\n"
                          f"📦 <b>Format:</b> {sel_fmt.upper()} | <b>Kualitas:</b> {sel_res}\n"
                          f"⏳ Menyiapkan download...",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    message_thread_id=update.effective_message.message_thread_id
                 )
 
                 self.session_manager.create_session(
                     user_id,
                     {"source": "direct_link", "url": p["url"], "title": user_title},
-                    json_file_path=None
+                    json_file_path=None,
+                    chat_id=update.effective_chat.id,
+                    message_thread_id=update.effective_message.message_thread_id
                 )
                 self.session_manager.set_progress_message(user_id, status_msg.message_id)
 
@@ -331,19 +334,22 @@ class DownloaderBot:
                     self.uploader = TelegramUploader(context.bot)
 
                 status_msg = await context.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=update.effective_chat.id,
                     text=f"📥 <b>Batch download dimulai</b>\n"
                          f"🎬 <b>Series:</b> {p['series_title']}\n"
                          f"📦 <b>Total:</b> {len(p['urls'])} episode\n"
                          f"📦 <b>Format:</b> {sel_fmt.upper()} | <b>Kualitas:</b> {sel_res}\n"
                          f"⏳ Memulai proses...",
-                    parse_mode="HTML"
+                    parse_mode="HTML",
+                    message_thread_id=update.effective_message.message_thread_id
                 )
 
                 self.session_manager.create_session(
                     user_id,
                     {"source": "batch", "title": p["series_title"], "total": len(p["urls"])},
-                    json_file_path=None
+                    json_file_path=None,
+                    chat_id=update.effective_chat.id,
+                    message_thread_id=update.effective_message.message_thread_id
                 )
                 self.session_manager.set_progress_message(user_id, status_msg.message_id)
 
@@ -380,13 +386,14 @@ class DownloaderBot:
             is_batch = len(selected_episodes) > 1
 
             status_msg = await context.bot.send_message(
-                chat_id=user_id,
+                chat_id=update.effective_chat.id,
                 text=f"📥 <b>{'Batch download' if is_batch else 'Download'} dimulai</b>\n"
                      f"🎬 <b>Judul:</b> {drama_title}\n"
                      f"📦 <b>Format:</b> {sel_fmt.upper()} | <b>Kualitas:</b> {sel_res}\n"
                      f"📦 <b>Total:</b> {len(selected_episodes)} episode\n"
                      f"⏳ Memproses...",
-                parse_mode="HTML"
+                parse_mode="HTML",
+                message_thread_id=update.effective_message.message_thread_id
             )
 
             if not self.uploader:
@@ -441,6 +448,8 @@ class DownloaderBot:
             "  3️⃣ Subtitle terpisah (file .srt dikirim sendiri)\n"
             "  4️⃣ Tanpa subtitle\n\n"
             "<i>Untuk /l dan /batch via HLS: pilihan 1=Gabung, 2=Tanpa, 3=Terpisah.</i>\n\n"
+            "<b>━━ Remote Update: /update ━━</b>\n"
+            "• Menarik update terbaru dari GitHub repo.\n\n"
             "<b>━━ Format JSON yang didukung ━━</b>\n"
             "• dramabox (v1 & v2), dramawave, flikreels\n"
             "• goodshort, freereels, stardust, vigloo, meloshort, <b>velolo</b>\n\n"
@@ -464,6 +473,51 @@ class DownloaderBot:
             parse_mode="Markdown"
         )
         return ConversationHandler.END
+
+    async def update_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Update bot from GitHub"""
+        user_id = update.effective_user.id
+        if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+            return
+
+        status_msg = await update.effective_message.reply_text(
+            "🔄 <b>Memeriksa update...</b>", 
+            parse_mode="HTML",
+            message_thread_id=update.effective_message.message_thread_id
+        )
+
+        try:
+            # Check current branch
+            proc = await asyncio.create_subprocess_exec(
+                "git", "rev-parse", "--abbrev-ref", "HEAD",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await proc.communicate()
+            branch = stdout.decode().strip() or "main"
+
+            # Execute git pull
+            proc = await asyncio.create_subprocess_exec(
+                "git", "pull", "origin", branch,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            output = stdout.decode() + stderr.decode()
+            
+            if "Already up to date" in output:
+                await status_msg.edit_text("✅ <b>Bot sudah menggunakan versi terbaru.</b>", parse_mode="HTML")
+            else:
+                await status_msg.edit_text(
+                    f"✅ <b>Update berhasil!</b>\n\n"
+                    f"<code>{output[:300]}</code>\n\n"
+                    f"🔄 Bot perlu direstart untuk menerapkan perubahan.",
+                    parse_mode="HTML"
+                )
+                logger.info(f"Update pulled successfully: {output}")
+        except Exception as e:
+            await status_msg.edit_text(f"❌ <b>Gagal update:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
     
     async def _cleanup_user_session(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, reason: str = ""):
         """
@@ -964,7 +1018,11 @@ class DownloaderBot:
                 return ConversationHandler.END
             
             # Buat session baru
-            self.session_manager.create_session(user_id, data, str(json_path))
+            self.session_manager.create_session(
+                user_id, data, str(json_path),
+                chat_id=update.effective_chat.id,
+                message_thread_id=update.effective_message.message_thread_id
+            )
 
             # ── Gunakan Universal Parser yang telah ditingkatkan ──────────────────
             universal_data = JSONParser.universal_parse(data)
@@ -1183,7 +1241,12 @@ class DownloaderBot:
             # Mari kita panggil handle_json_file tapi bypass download part.
             
             # Re-implementing handle_json_file logic here for simplicity & custom URL source
-            self.session_manager.create_session(user_id, data, str(json_path))
+            # Buat session baru
+            self.session_manager.create_session(
+                user_id, data, str(json_path),
+                chat_id=update.effective_chat.id,
+                message_thread_id=update.effective_message.message_thread_id
+            )
             
             # Use universal parser to detect if it's a streaming JSON
             results = JSONParser.universal_parse(data)
@@ -1219,7 +1282,8 @@ class DownloaderBot:
             chat_id=query.message.chat_id,
             text=info,
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            message_thread_id=query.message.message_thread_id
         )
 
     async def handle_close_mi(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1528,9 +1592,21 @@ class DownloaderBot:
         """Edit pesan status; jika gagal kirim pesan baru."""
         if not self.uploader:
             return
+            
+        chat_id = None
+        message_thread_id = None
+        
+        # Ambil session untuk mendapatkan chat_id & message_thread_id yang benar
+        session = self.session_manager.get_session(user_id)
+        if session:
+            chat_id = session.chat_id
+            message_thread_id = session.message_thread_id
+            
+        target_chat = chat_id or user_id
+        
         try:
             await self.uploader.bot.edit_message_text(
-                chat_id=user_id,
+                chat_id=target_chat,
                 message_id=msg.message_id,
                 text=text,
                 parse_mode="HTML",
@@ -1539,10 +1615,11 @@ class DownloaderBot:
         except Exception:
             try:
                 await self.uploader.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=target_chat,
                     text=text,
                     parse_mode="HTML",
-                    reply_markup=reply_markup
+                    reply_markup=reply_markup,
+                    message_thread_id=message_thread_id
                 )
             except Exception:
                 pass
@@ -2026,6 +2103,11 @@ class DownloaderBot:
         successful: int = 0
         failed: int = 0
         all_files_to_cleanup = []
+        
+        # Ambil session untuk mendapatkan chat_id & message_thread_id yang benar
+        session = self.session_manager.get_session(user_id)
+        target_chat = (session.chat_id if session else None) or user_id
+        thread_id = session.message_thread_id if session else None
 
         try:
             for idx, episode_data in enumerate(selected_episodes, 1):
@@ -2120,7 +2202,7 @@ class DownloaderBot:
                         failed += 1
                         logger.error(f"Download failed for episode {episode_num}")
                         await self.uploader.update_message(
-                            user_id, status_msg.message_id,
+                            target_chat, status_msg.message_id,
                             f"❌ <b>Gagal: {drama_title} — Ep {episode_num}</b>\n"
                             f"<i>Download error - Episode dilewati</i>"
                         )
@@ -2236,7 +2318,7 @@ class DownloaderBot:
                     try:
                         mkv_path = final_video.with_suffix(".mkv")
                         await self.uploader.update_message(
-                            user_id, status_msg.message_id,
+                            target_chat, status_msg.message_id,
                             f"🛠️ <b>Processing: {drama_title} — Remux MKV Ep {episode_num}</b>"
                         )
                         cmd = [
@@ -2283,17 +2365,18 @@ class DownloaderBot:
 
                     upload_ok = await self.uploader.upload_video(
                         file_path=final_video,
-                        chat_id=user_id,
+                        chat_id=target_chat,
                         title=drama_title,
                         episode=episode_num,
                         progress_callback=ep_progress,
-                        reply_markup=mi_markup
+                        reply_markup=mi_markup,
+                        message_thread_id=thread_id
                     )
 
                     if not upload_ok:
                         failed += 1
                         await self.uploader.update_message(
-                            user_id, status_msg.message_id,
+                            target_chat, status_msg.message_id,
                             f"❌ <b>Gagal: {drama_title} — Ep {episode_num}</b>\n"
                             f"<i>Upload error - Episode dilewati</i>"
                         )
@@ -2311,11 +2394,12 @@ class DownloaderBot:
                                 safe_sub_name = f"{safe_title}_{safe_episode}.id.srt"
                                 with open(subtitle_file, 'rb') as sub_f:
                                     await context.bot.send_document(
-                                        chat_id=user_id,
+                                        chat_id=target_chat,
                                         document=sub_f,
                                         filename=safe_sub_name,
                                         caption=f"📝 <b>Subtitle Indonesia (Backup)</b> — {drama_title} Ep {episode_num}",
-                                        parse_mode="HTML"
+                                        parse_mode="HTML",
+                                        message_thread_id=thread_id
                                     )
                                 logger.info(f"[DUAL-DELIVERY] Subtitle backup sent: {safe_sub_name}")
                         except Exception as sub_err:
@@ -2348,21 +2432,21 @@ class DownloaderBot:
                     f"<i>Seluruh file sementara telah dihapus.</i>"
                 )
                 try:
-                    await self.uploader.update_message(user_id, status_msg.message_id, final_text)
+                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text)
                 except:
-                    await context.bot.send_message(chat_id=user_id, text=final_text, parse_mode="HTML")
+                    await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
             else:
                 final_text = f"✅ <b>Selesai: {drama_title} — Ep {selected_episodes[0]['episode']}</b>"
                 try:
-                    await self.uploader.update_message(user_id, status_msg.message_id, final_text)
+                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text)
                 except:
-                    await context.bot.send_message(chat_id=user_id, text=final_text, parse_mode="HTML")
+                    await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
 
         except Exception as e:
             logger.error(f"Error in batch processing: {e}")
             try:
                 await self.uploader.update_message(
-                    user_id,
+                    target_chat,
                     status_msg.message_id,
                     f"❌ <b>Gagal:</b> {str(e)}\n\n<i>Membersihkan file...</i>"
                 )
@@ -2403,6 +2487,11 @@ class DownloaderBot:
         downloaded_path: Optional[Path] = None
         subtitle_path: Optional[Path]   = None
         success = False
+        
+        # Ambil session untuk mendapatkan chat_id & message_thread_id yang benar
+        session = self.session_manager.get_session(user_id)
+        target_chat = (session.chat_id if session else None) or user_id
+        thread_id = session.message_thread_id if session else None
 
         try:
             # ── 1. Download video dengan HLS optimization ────────────────────
@@ -2413,7 +2502,7 @@ class DownloaderBot:
                     if is_hls_stream:
                         # Untuk HLS, current_bytes adalah jumlah segmen yang sudah di download
                         await self.uploader.update_message(
-                            user_id, status_msg.message_id,
+                            target_chat, status_msg.message_id,
                             f"{batch_header}"
                             f"📥 <b>Downloading: {display_title}</b>\n"
                             f"📦 Progress: {current_bytes} segmen\n"
@@ -2421,7 +2510,7 @@ class DownloaderBot:
                         )
                     else:
                         await self.uploader.update_message(
-                            user_id, status_msg.message_id,
+                            target_chat, status_msg.message_id,
                             f"{batch_header}"
                             f"📥 <b>Downloading: {display_title}</b>\n"
                             f"📦 Size: {format_size(current_bytes)}"
@@ -2580,17 +2669,18 @@ class DownloaderBot:
 
             async def up_progress(text: str):
                 try:
-                    await self.uploader.update_message(user_id, status_msg.message_id, text)
+                    await self.uploader.update_message(target_chat, status_msg.message_id, text)
                 except Exception:
                     pass
 
             upload_ok = await self.uploader.upload_with_progress(
                 file_path=downloaded_path,
-                chat_id=user_id,
+                chat_id=target_chat,
                 title=display_title,
                 episode="",
                 update_callback=up_progress,
                 reply_markup=mi_markup,
+                message_thread_id=thread_id
             )
 
             if not upload_ok:
@@ -2607,11 +2697,12 @@ class DownloaderBot:
                     sub_filename = Path(filename).stem + ".id" + subtitle_path.suffix
                     with open(subtitle_path, "rb") as sf:
                         await self.uploader.bot.send_document(
-                            chat_id=user_id,
+                            chat_id=target_chat,
                             document=sf,
                             filename=sub_filename,
                             caption=f"📄 <b>Subtitle Indonesia:</b> {sub_filename}",
                             parse_mode="HTML",
+                            message_thread_id=thread_id
                         )
                     logger.info(f"[dl] ✅ Subtitle terpisah dikirim: {sub_filename}")
                 except Exception as e:
@@ -2940,6 +3031,7 @@ def main():
     
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("help",  bot.help))
+    app.add_handler(CommandHandler("update", bot.update_bot))
     app.add_handler(CommandHandler("cancel", bot.cancel))
     app.add_handler(CallbackQueryHandler(bot.handle_settings_choice, pattern="^set_"))
     app.add_handler(CallbackQueryHandler(bot.handle_confirmation_button, pattern="^conf_"))

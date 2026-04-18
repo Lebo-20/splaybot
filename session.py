@@ -23,6 +23,8 @@ class UserSession:
     created_at: datetime = field(default_factory=datetime.now)
     last_activity: datetime = field(default_factory=datetime.now)
     progress_message_id: Optional[int] = None
+    chat_id: Optional[int] = None
+    message_thread_id: Optional[int] = None
     
     def is_expired(self) -> bool:
         """Check if session has expired"""
@@ -39,7 +41,8 @@ class SessionManager:
     def __init__(self):
         self.sessions: Dict[int, UserSession] = {}
     
-    def create_session(self, user_id: int, json_data: Dict[str, Any], json_file_path: str = None) -> UserSession:
+    def create_session(self, user_id: int, json_data: Dict[str, Any], json_file_path: str = None, 
+                       chat_id: int = None, message_thread_id: int = None) -> UserSession:
         """Create new session for user"""
         self.cleanup_expired()
         
@@ -52,7 +55,9 @@ class SessionManager:
             user_id=user_id,
             job_id=str(uuid.uuid4()),
             json_data=json_data,
-            json_file_path=json_file_path
+            json_file_path=json_file_path,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id
         )
         self.sessions[user_id] = session
         logger.info(f"Created new session for user {user_id} with job_id {session.job_id}")

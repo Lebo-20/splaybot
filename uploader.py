@@ -34,7 +34,7 @@ class TelegramUploader:
         
     async def upload_video(self, file_path: Path, chat_id: int, title: str, episode: str,
                           progress_callback: Optional[Callable] = None,
-                          reply_markup=None) -> bool:
+                          reply_markup=None, message_thread_id: Optional[int] = None) -> bool:
         """Upload video to Telegram with progress tracking and retry"""
         for attempt in range(self.max_retries):
             try:
@@ -93,7 +93,8 @@ class TelegramUploader:
                                 caption=caption,
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
-                                force_document=True
+                                force_document=True,
+                                reply_to_message_id=message_thread_id if message_thread_id else None
                             )
                         else:
                             await self.pyrogram_app.send_video(
@@ -101,7 +102,8 @@ class TelegramUploader:
                                 video=str(file_path),
                                 caption=caption,
                                 progress=pyrogram_progress,
-                                reply_markup=pyro_markup
+                                reply_markup=pyro_markup,
+                                reply_to_message_id=message_thread_id if message_thread_id else None
                             )
                         logger.info(f"🚀 Pyrogram Upload completed for {file_path} ({'MKV doc' if is_mkv else 'MP4 video'})")
                         return True
@@ -126,7 +128,8 @@ class TelegramUploader:
                                 write_timeout=600,
                                 connect_timeout=600,
                                 pool_timeout=600,
-                                reply_markup=reply_markup
+                                reply_markup=reply_markup,
+                                message_thread_id=message_thread_id
                             )
                         else:
                             await self.bot.send_video(
@@ -139,7 +142,8 @@ class TelegramUploader:
                                 write_timeout=600,
                                 connect_timeout=600,
                                 pool_timeout=600,
-                                reply_markup=reply_markup
+                                reply_markup=reply_markup,
+                                message_thread_id=message_thread_id
                             )
                         
                     logger.info(f"Upload completed for {file_path}")
@@ -176,7 +180,7 @@ class TelegramUploader:
         return False
     
     async def upload_with_progress(self, file_path: Path, chat_id: int, title: str, episode: str,
-                                  update_callback: Callable, reply_markup=None) -> bool:
+                                  update_callback: Callable, reply_markup=None, message_thread_id: Optional[int] = None) -> bool:
         """Upload with progress updates"""
         async def progress_callback(current, total):
             percentage = (current / total) * 100
@@ -191,9 +195,10 @@ class TelegramUploader:
             except Exception as e:
                 logger.warning(f"Failed to update progress: {e}")
             
-        return await self.upload_video(file_path, chat_id, title, episode, progress_callback, reply_markup=reply_markup)
+        return await self.upload_video(file_path, chat_id, title, episode, progress_callback, 
+                                       reply_markup=reply_markup, message_thread_id=message_thread_id)
     
-    async def send_error(self, chat_id: int, error_msg: str):
+    async def send_error(self, chat_id: int, error_msg: str, message_thread_id: Optional[int] = None):
         """Send error message to user with retry"""
         for attempt in range(self.max_retries):
             try:
@@ -211,7 +216,7 @@ class TelegramUploader:
                 if attempt < self.max_retries - 1:
                     await asyncio.sleep(2)
     
-    async def send_status(self, chat_id: int, message: str):
+    async def send_status(self, chat_id: int, message: str, message_thread_id: Optional[int] = None):
         """Send status message with retry"""
         for attempt in range(self.max_retries):
             try:
