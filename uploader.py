@@ -84,6 +84,9 @@ class TelegramUploader:
                                 pyro_markup = None
 
                         is_mkv = file_path.suffix.lower() == ".mkv"
+                        # Gunakan thread_id sebagai reply_to_message_id (Standar Pyrogram untuk topik)
+                        target_thread = message_thread_id if message_thread_id else None
+                        
                         if is_mkv:
                             await self.pyrogram_app.send_document(
                                 chat_id=chat_id,
@@ -92,7 +95,7 @@ class TelegramUploader:
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
                                 force_document=True,
-                                message_thread_id=message_thread_id
+                                reply_to_message_id=target_thread
                             )
                         else:
                             await self.pyrogram_app.send_video(
@@ -101,7 +104,7 @@ class TelegramUploader:
                                 caption=caption,
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
-                                message_thread_id=message_thread_id
+                                reply_to_message_id=target_thread
                             )
                         logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
                         return True
