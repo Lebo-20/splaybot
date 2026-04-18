@@ -1755,37 +1755,26 @@ class DownloaderBot:
                 "subtitle_url": sub_url,
                 "video_path":  str(video_path),
                 "output_path": str(output_path),
-                "status_msg":  detect_msg,
+                # Pesan deteksi akan dihapus nanti saat user memilih
+                "old_msgs":    [detect_msg.message_id] 
             }
-            # [SUB-PRIORITY] Automate choice if Indonesian detected
-            is_indonesia = any(SubtitleDetector.is_indonesian_subtitle(t) for t in subtitle_tracks)
-            if is_indonesia:
-                context.user_data["pending_single"]["subtitle_mode"] = "embed"
-                logger.info(f"[SUB-PRIORITY] Indonesian sub detected for /l, auto-selecting 'embed' mode.")
-                
-                await detect_msg.edit_text(
-                    f"📥 <b>Download dimulai</b>\n"
-                    f"🎬 <b>Judul:</b> {user_title}\n"
-                    f"🔗 <b>Sumber:</b> {source_label}\n\n"
-                    f"💬 <b>Subtitle Indonesia terdeteksi</b>\n"
-                    f"Otomatis memilih: <b>Hardsub (Gabung ke Video)</b>\n\n"
-                    f"1️⃣ Gabungkan subtitle ke video\n"
-                    f"2️⃣ Kirim video tanpa subtitle\n"
-                    f"3️⃣ Kirim subtitle sebagai file terpisah",
-                    parse_mode="HTML"
-                )
-            else:
-                await detect_msg.edit_text(
-                    f"📥 <b>Download dimulai</b>\n"
-                    f"🎬 <b>Judul:</b> {user_title}\n"
-                    f"🔗 <b>Sumber:</b> {source_label}\n\n"
-                    f"💬 <b>Subtitle terdeteksi</b> untuk video ini.\n"
-                    f"Apakah subtitle ingin digabungkan?\n\n"
-                    f"1️⃣ Gabungkan subtitle ke video\n"
-                    f"2️⃣ Kirim video tanpa subtitle\n"
-                    f"3️⃣ Kirim subtitle sebagai file terpisah",
-                    parse_mode="HTML"
-                )
+            
+            # Tampilkan tombol inline untuk pilihan subtitle (Anti-Spam)
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎬 Softsub (Track)", callback_data="sub_softsub"),
+                 InlineKeyboardButton("🔥 Hardsub (Burn-in)", callback_data="sub_embed")],
+                [InlineKeyboardButton("📄 Separate (.srt)", callback_data="sub_separate"),
+                 InlineKeyboardButton("🚫 Tanpa Subtitle", callback_data="sub_none")]
+            ])
+            
+            # Edit pesan deteksi menjadi menu pilihan
+            await self._safe_update(user_id, detect_msg, 
+                f"🎬 <b>Pilihan Subtitle: {user_title}</b>\n\n"
+                f"Ditemukan {len(subtitle_tracks)} track subtitle.\n"
+                f"Silakan pilih mode pemrosesan:",
+                reply_markup=markup
+            )
             return AWAITING_SUBTITLE_CHOICE
 
         else:
