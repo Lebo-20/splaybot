@@ -92,7 +92,7 @@ class TelegramUploader:
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
                                 force_document=True,
-                                reply_to_message_id=message_thread_id if message_thread_id else None
+                                message_thread_id=message_thread_id
                             )
                         else:
                             await self.pyrogram_app.send_video(
@@ -101,7 +101,7 @@ class TelegramUploader:
                                 caption=caption,
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
-                                reply_to_message_id=message_thread_id if message_thread_id else None
+                                message_thread_id=message_thread_id
                             )
                         logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
                         return True
