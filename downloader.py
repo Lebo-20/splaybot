@@ -276,10 +276,14 @@ class DownloadManager:
             if output_format.lower() == "mkv" and output_path.suffix.lower() != ".mkv":
                 output_path = output_path.with_suffix(".mkv")
 
+            req_headers = get_headers(url)
+            # FFmpeg requires headers in a specific string format with \r\n
+            header_str = "".join([f"{k}: {v}\r\n" for k, v in req_headers.items() if k.lower() != 'user-agent'])
+            
             cmd = [
                 "ffmpeg", "-y",
-                "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "-headers", "Accept: application/vnd.apple.mpegurl\r\n",
+                "-user_agent", req_headers.get("User-Agent", "Mozilla/5.0"),
+                "-headers", header_str,
                 "-i", url,
                 "-c", "copy"
             ]

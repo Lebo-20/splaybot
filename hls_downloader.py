@@ -88,34 +88,24 @@ class OptimizedHLSDownloader:
         return self._session
 
     def _build_headers(self, url: str, referer: str = None) -> Dict[str, str]:
-        """Build headers yang tepat berdasarkan URL - ENHANCED for Rishort"""
+        """Build headers yang tepat berdasarkan URL - INTEGRATED with utils.get_headers"""
+        # Gunakan base headers dari utils yang sudah dioptimasi per source
+        headers = get_headers(url)
+        
         parsed = urlparse(url)
         host = parsed.netloc.lower()
         
-        # Base headers
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        # Additional common headers for HLS
+        headers.update({
             "Accept": "application/vnd.apple.mpegurl, application/x-mpegURL, video/mp4, */*",
             "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-        }
+        })
         
-        # Rishort / GoodShort specific
-        if "rishort.com" in host or "goodshort" in host or "workers.dev" in host:
-            headers.update({
-                "Origin": "https://new.rishort.com",
-                "Referer": referer or "https://new.rishort.com/",
-                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Windows"',
-                "Sec-Fetch-Site": "cross-site",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-            })
-        
+        if referer:
+            headers["Referer"] = referer
+            headers["Origin"] = re.sub(r'/(?:[^/]+)?$', '', referer)
+
         return headers
 
     async def _fetch_with_retry(self, url: str, headers: Dict = None, 
