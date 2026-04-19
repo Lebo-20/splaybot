@@ -87,25 +87,44 @@ class TelegramUploader:
                         # Gunakan message_thread_id untuk pengiriman ke topik supergroup
                         target_thread = message_thread_id if message_thread_id else None
                         
-                        if is_mkv:
-                            await self.pyrogram_app.send_document(
-                                chat_id=chat_id,
-                                document=str(file_path),
-                                caption=caption,
-                                progress=pyrogram_progress,
-                                reply_markup=pyro_markup,
-                                force_document=True,
-                                message_thread_id=target_thread
-                            )
-                        else:
-                            await self.pyrogram_app.send_video(
-                                chat_id=chat_id,
-                                video=str(file_path),
-                                caption=caption,
-                                progress=pyrogram_progress,
-                                reply_markup=pyro_markup,
-                                message_thread_id=target_thread
-                            )
+                        # Prepare upload arguments to be compatible with various Pyrogram versions
+                        upload_args = {
+                            "chat_id": chat_id,
+                            "caption": caption,
+                            "progress": pyrogram_progress,
+                            "reply_markup": pyro_markup
+                        }
+                        
+                        # Try using message_thread_id (Newer Pyrogram)
+                        if target_thread:
+                            upload_args["message_thread_id"] = target_thread
+                        
+                        try:
+                            if is_mkv:
+                                upload_args["document"] = str(file_path)
+                                upload_args["force_document"] = True
+                                try:
+                                    await self.pyrogram_app.send_document(**upload_args)
+                                except TypeError as e:
+                                    if "message_thread_id" in str(e):
+                                        upload_args.pop("message_thread_id")
+                                        upload_args["reply_to_message_id"] = target_thread
+                                        await self.pyrogram_app.send_document(**upload_args)
+                                    else: raise e
+                            else:
+                                upload_args["video"] = str(file_path)
+                                try:
+                                    await self.pyrogram_app.send_video(**upload_args)
+                                except TypeError as e:
+                                    if "message_thread_id" in str(e):
+                                        upload_args.pop("message_thread_id")
+                                        upload_args["reply_to_message_id"] = target_thread
+                                        await self.pyrogram_app.send_video(**upload_args)
+                                    else: raise e
+                        except Exception as e:
+                            logger.error(f"Pyrogram upload internal error: {e}")
+                            # Fallback to standard bot upload if Pyrogram fails completely
+                            raise e
                         logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
                         return True
 
