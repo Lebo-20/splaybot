@@ -13,7 +13,7 @@ from datetime import datetime
 import aiohttp
 import aiofiles
 
-from utils import logger, FileCleanup, format_size, SubtitleDetector
+from utils import logger, FileCleanup, format_size, SubtitleDetector, get_headers
 from config import (
     DOWNLOAD_TIMEOUT, PROCESSING_TIMEOUT, MAX_SEGMENT_RETRIES,
     SEGMENT_CONCURRENCY, TARGET_FILE_SIZE_MB, TARGET_VIDEO_BITRATE,
