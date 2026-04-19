@@ -16,21 +16,42 @@ class TelegramUploader:
         self.upload_limiter = asyncio.Semaphore(MAX_CONCURRENT_UPLOADS)
         self.max_retries = MAX_RETRIES
         self.pyrogram_app = None
+        self._is_started = False
         
         if API_ID and API_HASH:
             try:
                 from pyrogram import Client
+                # Persistent sessions untuk menyimpan peer cache (Peer id invalid fix)
                 self.pyrogram_app = Client(
                     "fast_uploader",
                     api_id=API_ID,
                     api_hash=API_HASH,
                     bot_token=BOT_TOKEN,
-                    in_memory=True, 
-                    workers=4
+                    workers=8  # Meningkatkan concurrency internal
                 )
-                logger.info("🚀 Pyrogram client ready for ultra-fast uploads.")
+                logger.info("🚀 Pyrogram client initialized for persistent sessions.")
             except ImportError:
                 logger.warning("Pyrogram is not installed. Defaulting to standard upload.")
+
+    async def start(self):
+        """Start the pyrogram client if it exists"""
+        if self.pyrogram_app and not self._is_started:
+            try:
+                await self.pyrogram_app.start()
+                self._is_started = True
+                logger.info("✅ Pyrogram client started and connected.")
+            except Exception as e:
+                logger.error(f"❌ Failed to start Pyrogram: {e}")
+
+    async def stop(self):
+        """Stop the pyrogram client gracefully"""
+        if self.pyrogram_app and self._is_started:
+            try:
+                await self.pyrogram_app.stop()
+                self._is_started = False
+                logger.info("👋 Pyrogram client stopped.")
+            except Exception as e:
+                logger.error(f"Error stopping Pyrogram: {e}")
         
     async def upload_video(self, file_path: Path, chat_id: int, title: str, episode: str,
                           progress_callback: Optional[Callable] = None,
@@ -46,88 +67,95 @@ class TelegramUploader:
                         logger.error(f"File too large: {file_size} bytes")
                         return False
                     
+                    # ── Pyrogram Logic ──────────────────────────────────────────
                     if self.pyrogram_app:
-                        if not getattr(self.pyrogram_app, "is_connected", False):
-                            await self.pyrogram_app.start()
+                        # Pastikan sudah terhubung
+                        if not self._is_started:
+                            await self.start()
                             
-                        last_update = [0]
-                        async def pyrogram_progress(current, total):
-                            now = time.time()
-                            if now - last_update[0] > 2.0 or current == total:
-                                last_update[0] = now
-                                if progress_callback:
-                                    try:
-                                        await progress_callback(current, total)
-                                    except Exception:
-                                        pass
-                                        
-                        caption = f"🎬 **{title}**\n"
-                        if episode:
-                            caption += f"📺 Episode: {episode}\n"
-                            
-                        pyro_markup = None
-                        if reply_markup:
-                            try:
-                                from pyrogram.types import InlineKeyboardMarkup as PyroMarkup
-                                from pyrogram.types import InlineKeyboardButton as PyroButton
-                                pyro_buttons = []
-                                for row in reply_markup.inline_keyboard:
-                                    pyro_row = []
-                                    for btn in row:
-                                        if btn.url:
-                                            pyro_row.append(PyroButton(btn.text, url=btn.url))
-                                        elif btn.callback_data:
-                                            pyro_row.append(PyroButton(btn.text, callback_data=btn.callback_data))
-                                    pyro_buttons.append(pyro_row)
-                                pyro_markup = PyroMarkup(pyro_buttons)
-                            except Exception:
-                                pyro_markup = None
-
-                        is_mkv = file_path.suffix.lower() == ".mkv"
-                        # Gunakan message_thread_id untuk pengiriman ke topik supergroup
-                        target_thread = message_thread_id if message_thread_id else None
-                        
-                        # Prepare upload arguments to be compatible with various Pyrogram versions
-                        upload_args = {
-                            "chat_id": chat_id,
-                            "caption": caption,
-                            "progress": pyrogram_progress,
-                            "reply_markup": pyro_markup
-                        }
-                        
-                        # Try using message_thread_id (Newer Pyrogram)
-                        if target_thread:
-                            upload_args["message_thread_id"] = target_thread
-                        
                         try:
+                            # Resolve Peer (Fix: Peer id invalid)
+                            # Ini memastikan Pyrogram mengenali chat_id sebelum upload
+                            logger.debug(f"Resolving peer for chat {chat_id}...")
+                            await self.pyrogram_app.get_chat(chat_id)
+                            
+                            last_update = [0]
+                            async def pyrogram_progress(current, total):
+                                now = time.time()
+                                if now - last_update[0] > 2.0 or current == total:
+                                    last_update[0] = now
+                                    if progress_callback:
+                                        try:
+                                            await progress_callback(current, total)
+                                        except Exception:
+                                            pass
+                                            
+                            caption = f"🎬 **{title}**\n"
+                            if episode:
+                                caption += f"📺 Episode: {episode}\n"
+                                
+                            pyro_markup = None
+                            if reply_markup:
+                                try:
+                                    from pyrogram.types import InlineKeyboardMarkup as PyroMarkup
+                                    from pyrogram.types import InlineKeyboardButton as PyroButton
+                                    pyro_buttons = []
+                                    for row in reply_markup.inline_keyboard:
+                                        pyro_row = []
+                                        for btn in row:
+                                            if btn.url:
+                                                pyro_row.append(PyroButton(btn.text, url=btn.url))
+                                            elif btn.callback_data:
+                                                pyro_row.append(PyroButton(btn.text, callback_data=btn.callback_data))
+                                        pyro_buttons.append(pyro_row)
+                                    pyro_markup = PyroMarkup(pyro_buttons)
+                                except Exception:
+                                    pyro_markup = None
+
+                            is_mkv = file_path.suffix.lower() == ".mkv"
+                            target_thread = message_thread_id if message_thread_id else None
+                            
+                            # Arguments untuk kompatibilitas versi
+                            upload_args = {
+                                "chat_id": chat_id,
+                                "caption": caption,
+                                "progress": pyrogram_progress,
+                                "reply_markup": pyro_markup
+                            }
+                            
+                            if target_thread:
+                                upload_args["message_thread_id"] = target_thread
+                            
                             if is_mkv:
                                 upload_args["document"] = str(file_path)
                                 upload_args["force_document"] = True
                                 try:
                                     await self.pyrogram_app.send_document(**upload_args)
-                                except TypeError as e:
-                                    if "message_thread_id" in str(e):
+                                except TypeError as te:
+                                    if "message_thread_id" in str(te):
                                         upload_args.pop("message_thread_id")
                                         upload_args["reply_to_message_id"] = target_thread
                                         await self.pyrogram_app.send_document(**upload_args)
-                                    else: raise e
+                                    else: raise te
                             else:
                                 upload_args["video"] = str(file_path)
                                 try:
                                     await self.pyrogram_app.send_video(**upload_args)
-                                except TypeError as e:
-                                    if "message_thread_id" in str(e):
+                                except TypeError as te:
+                                    if "message_thread_id" in str(te):
                                         upload_args.pop("message_thread_id")
                                         upload_args["reply_to_message_id"] = target_thread
                                         await self.pyrogram_app.send_video(**upload_args)
-                                    else: raise e
-                        except Exception as e:
-                            logger.error(f"Pyrogram upload internal error: {e}")
-                            # Fallback to standard bot upload if Pyrogram fails completely
-                            raise e
-                        logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
-                        return True
-
+                                    else: raise te
+                                    
+                            logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
+                            return True
+                            
+                        except Exception as pyro_err:
+                            logger.error(f"⚠️ Pyrogram upload failed, trying fallback: {pyro_err}")
+                            # Lanjut ke fallback standard uploader di bawah
+                    
+                    # ── Standard Uploader Fallback (python-telegram-bot) ──────
                     tracker = ProgressTracker(file_size, progress_callback)
                     await tracker.start()
                     

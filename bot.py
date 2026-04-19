@@ -56,6 +56,16 @@ class DownloaderBot:
         self.cleanup = FileCleanup()
         self.download_semaphore = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
         
+    async def post_init(self, application: Application):
+        """Start background services when bot starts"""
+        await self.uploader.start()
+        logger.info("🚀 Background services (Pyrogram) started.")
+
+    async def post_shutdown(self, application: Application):
+        """Stop background services when bot stops"""
+        await self.uploader.stop()
+        logger.info("👋 Background services (Pyrogram) stopped.")
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
         keyboard = [
@@ -2997,7 +3007,11 @@ def main():
     """Main entry point"""
     bot = DownloaderBot()
     
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder() \
+        .token(BOT_TOKEN) \
+        .post_init(bot.post_init) \
+        .post_shutdown(bot.post_shutdown) \
+        .build()
     
     conv_handler = ConversationHandler(
         entry_points=[
