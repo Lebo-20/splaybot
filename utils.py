@@ -556,13 +556,17 @@ class LocalSubtitleFinder:
             # Clean title for matching
             def clean(s):
                 # Remove special chars and spaces for robust matching
-                return re.sub(r'[^a-zA-Z0-9]', '', str(s).lower())
+                val = re.sub(r'[^a-zA-Z0-9]', '', str(s).lower())
+                return val
             
             clean_drama = clean(drama_title)
-            ep_str = str(episode_num).zfill(2)
+            ep_num_only = re.sub(r'[^0-9]', '', str(episode_num))
+            ep_str = ep_num_only.zfill(2)
             
-            # Scan directory
-            for sub_file in SUBTITLE_DIR.glob("*.*"):
+            logger.info(f"🔍 Searching local subtitle for: '{drama_title}' (ep {ep_num_only}) in {SUBTITLE_DIR}")
+            
+            # Scan directory RECURSIVELY (rglob)
+            for sub_file in SUBTITLE_DIR.rglob("*.*"):
                 if sub_file.suffix.lower() not in ['.srt', '.vtt', '.ass']:
                     continue
                     
@@ -577,11 +581,12 @@ class LocalSubtitleFinder:
                     # Check for episode patterns: E01, EP01, _01, 01.srt
                     patterns = [
                         f"e{ep_str}", f"ep{ep_str}", f"episode{ep_str}",
+                        f"e{ep_num_only}", f"ep{ep_num_only}",
                         f"_{ep_str}", f" {ep_str}", f"ep {ep_str}"
                     ]
                     
                     if any(pattern in filename for pattern in patterns) or f"{ep_str}." in filename:
-                        logger.info(f"🔍 Found local subtitle match: {sub_file.name}")
+                        logger.info(f"✅ Found local subtitle match: {sub_file.relative_to(SUBTITLE_DIR)}")
                         return sub_file
                         
             return None
