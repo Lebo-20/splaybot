@@ -4,6 +4,8 @@ import uuid
 import re
 from pathlib import Path
 from datetime import datetime
+import os
+import sys
 from typing import Dict, Any, Tuple, Optional, List, Literal, cast
 from telegram import Update
 from telegram.ext import (
@@ -520,6 +522,21 @@ class DownloaderBot:
                 logger.info(f"Update pulled successfully: {output}")
         except Exception as e:
             await status_msg.edit_text(f"❌ <b>Gagal update:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
+
+    async def restart_bot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Restart the bot process"""
+        user_id = update.effective_user.id
+        if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+            return
+            
+        await update.message.reply_text("🔄 <b>Restarting bot...</b> Mohon tunggu sebentar.", parse_mode="HTML")
+        logger.info(f"Bot restart initiated by user {user_id}")
+        
+        # Give a small delay to ensure message is sent
+        await asyncio.sleep(1)
+        
+        # Restart the process
+        os.execl(sys.executable, sys.executable, *sys.argv)
     
     async def _cleanup_user_session(self, user_id: int, context: ContextTypes.DEFAULT_TYPE, reason: str = ""):
         """
@@ -3022,6 +3039,7 @@ def main():
     app.add_handler(CommandHandler("start", bot.start))
     app.add_handler(CommandHandler("help",  bot.help))
     app.add_handler(CommandHandler("update", bot.update_bot))
+    app.add_handler(CommandHandler("restart", bot.restart_bot))
     app.add_handler(CommandHandler("cancel", bot.cancel))
     app.add_handler(CallbackQueryHandler(bot.handle_settings_choice, pattern="^set_"))
     app.add_handler(CallbackQueryHandler(bot.handle_confirmation_button, pattern="^conf_"))
