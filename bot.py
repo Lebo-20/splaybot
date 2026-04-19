@@ -2443,24 +2443,25 @@ class DownloaderBot:
                     f"<i>Seluruh file sementara telah dihapus.</i>"
                 )
                 try:
-                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text)
+                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text, message_thread_id=thread_id)
                 except:
                     await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
             else:
                 final_text = f"✅ <b>Selesai: {drama_title} — Ep {selected_episodes[0]['episode']}</b>"
                 try:
-                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text)
+                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text, message_thread_id=thread_id)
                 except:
                     await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
 
         except Exception as e:
             logger.error(f"Error in batch processing: {e}")
             try:
-                await self.uploader.update_message(
-                    target_chat,
-                    status_msg.message_id,
-                    f"❌ <b>Gagal:</b> {str(e)}\n\n<i>Membersihkan file...</i>"
-                )
+                    await self.uploader.update_message(
+                        target_chat,
+                        status_msg.message_id,
+                        f"❌ <b>Gagal:</b> {str(e)}\n\n<i>Membersihkan file...</i>",
+                        message_thread_id=thread_id
+                    )
             except:
                 pass
 

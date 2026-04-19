@@ -84,7 +84,7 @@ class TelegramUploader:
                                 pyro_markup = None
 
                         is_mkv = file_path.suffix.lower() == ".mkv"
-                        # Gunakan thread_id sebagai reply_to_message_id (Standar Pyrogram untuk topik)
+                        # Gunakan message_thread_id untuk pengiriman ke topik supergroup
                         target_thread = message_thread_id if message_thread_id else None
                         
                         if is_mkv:
@@ -95,7 +95,7 @@ class TelegramUploader:
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
                                 force_document=True,
-                                reply_to_message_id=target_thread
+                                message_thread_id=target_thread
                             )
                         else:
                             await self.pyrogram_app.send_video(
@@ -104,7 +104,7 @@ class TelegramUploader:
                                 caption=caption,
                                 progress=pyrogram_progress,
                                 reply_markup=pyro_markup,
-                                reply_to_message_id=target_thread
+                                message_thread_id=target_thread
                             )
                         logger.info(f"🚀 Pyrogram Upload completed for {file_path}")
                         return True
@@ -146,7 +146,7 @@ class TelegramUploader:
                     return False
         return False
     
-    async def update_message(self, chat_id: int, message_id: int, text: str, reply_markup=None):
+    async def update_message(self, chat_id: int, message_id: int, text: str, reply_markup=None, message_thread_id: Optional[int] = None):
         """Edit or Resend message if not found (Smart Resend)"""
         for attempt in range(self.max_retries):
             try:
@@ -161,7 +161,8 @@ class TelegramUploader:
                 if "not found" in error_str or "message can't be found" in error_str:
                     try:
                         return await self.bot.send_message(
-                            chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=reply_markup
+                            chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, 
+                            reply_markup=reply_markup, message_thread_id=message_thread_id
                         )
                     except: return
                 
