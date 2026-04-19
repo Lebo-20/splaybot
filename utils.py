@@ -97,10 +97,10 @@ class JSONParser:
     """Universal JSON Parser for various drama video sources"""
     
     @staticmethod
-    def parse_universal(data: Union[Dict, List, str]) -> Dict[str, Any]:
+    def universal_parse(data: Union[Dict, List, str]) -> Dict[str, Any]:
         """
         Recursive search for video info in any JSON structure.
-        Priority given to dramaflickreels format.
+        Optimized for FlickReels and DramaWave.
         """
         if isinstance(data, str):
             try:
@@ -110,8 +110,10 @@ class JSONParser:
 
         result = {
             "title": "Drama Video",
-            "episodes": [],
-            "cover": None,
+            "episodes": [],      # For compatibility
+            "all_episodes": [],  # Used by bot.py
+            "cover": None,       # Internal usage
+            "cover_url": None,   # Used by bot.py
             "description": None,
             "source": "unknown"
         }
@@ -125,14 +127,16 @@ class JSONParser:
                 result["description"] = drama_info.get("description")
                 result["source"] = drama_info.get("source", "dramaflickreels")
                 
-                for ep in data["episodes"]:
+                for idx, ep in enumerate(data["episodes"]):
+                    ep_num = str(ep.get("index", idx) + 1)
                     ep_info = {
                         "id": ep.get("id"),
-                        "name": ep.get("name"),
-                        "index": ep.get("index"),
+                        "episode": ep_num,
+                        "name": ep.get("name") or f"Episode {ep_num}",
                         "video_url": None,
                         "subtitle_url": None,
-                        "cover": None
+                        "cover": None,
+                        "drama_title": result["title"]
                     }
                     
                     # Extract from raw if available
@@ -140,21 +144,31 @@ class JSONParser:
                     if isinstance(raw, dict):
                         ep_info["video_url"] = raw.get("chapter_link") or raw.get("video_url") or raw.get("m3u8_url")
                         ep_info["cover"] = raw.get("chapter_cover") or raw.get("cover")
+                        
+                        # Subtitles in FlickReels
+                        subs = raw.get("subtiles", []) # Note typo in source sometimes
+                        if isinstance(subs, list):
+                            indo = SubtitleDetector.find_indonesian_subtitle(subs)
+                            if indo: ep_info["subtitle_url"] = SubtitleDetector.get_subtitle_url(indo)
                     
                     if not ep_info["video_url"]:
                         ep_info["video_url"] = ep.get("video_url") or ep.get("url")
                         
                     if ep_info["video_url"]:
+                        ep_info["has_subtitle"] = bool(ep_info["subtitle_url"])
                         result["episodes"].append(ep_info)
+                        result["all_episodes"].append(ep_info)
                 
                 if result["episodes"]:
+                    result["cover_url"] = result["cover"]
                     return result
 
-            # Check for DramaWave format
+            # Check for DramaWave (MyDramaWave) format
             # Path: data -> info -> episode_list
-            if "data" in data and isinstance(data["data"], dict) and "info" in data["data"]:
+            if isinstance(data.get("data"), dict) and "info" in data["data"]:
                 info = data["data"]["info"]
                 if "episode_list" in info:
+                    logger.info("🎯 Detected MyDramaWave JSON structure")
                     result["title"] = info.get("name", result["title"])
                     result["cover"] = info.get("cover")
                     result["description"] = info.get("desc")
@@ -162,27 +176,35 @@ class JSONParser:
                     
                     for idx, ep in enumerate(info["episode_list"]):
                         ep_num = str(idx + 1)
+                        # Prioritaskan h264 m3u8 untuk kompatibilitas broad
                         v_url = ep.get("external_audio_h264_m3u8") or ep.get("m3u8_url") or ep.get("video_url")
                         
                         sub_url = None
                         sub_list = ep.get("subtitle_list")
                         if isinstance(sub_list, list):
+                            # Debug: Log sub detection
+                            logger.debug(f"Checking {len(sub_list)} subtitles for episode {ep_num}")
                             indo_sub = SubtitleDetector.find_indonesian_subtitle(sub_list)
                             if indo_sub:
                                 sub_url = SubtitleDetector.get_subtitle_url(indo_sub)
+                                logger.info(f"✅ Found ID Sub for Ep {ep_num}: {sub_url[:50]}...")
                         
                         if v_url:
-                            result["episodes"].append({
-                                "id": ep.get("id", ep_num),
+                            ep_data = {
                                 "episode": ep_num,
-                                "name": ep.get("name") or f"Episode {ep_num}",
-                                "video_url": v_url,
+                                "title": ep.get("name") or f"Episode {ep_num}",
+                                "drama_title": result["title"],
+                                "url": v_url,
                                 "subtitle_url": sub_url,
-                                "cover": ep.get("cover")
-                            })
+                                "has_subtitle": bool(sub_url),
+                                "cover": ep.get("cover"),
+                                "source": "dramawave"
+                            }
+                            result["episodes"].append(ep_data)
+                            result["all_episodes"].append(ep_data)
                     
                     if result["episodes"]:
-                        logger.info(f"Detected DramaWave format with {len(result['episodes'])} episodes")
+                        result["cover_url"] = result["cover"]
                         return result
 
         # General recursive search fallback
@@ -212,13 +234,18 @@ class JSONParser:
         _find_recursively(data)
         
         if all_videos and not result["episodes"]:
+            result["source"] = "generic_recursive"
             for i, vid in enumerate(all_videos):
-                result["episodes"].append({
+                ep_data = {
+                    "episode": str(i + 1),
                     "name": f"Episode {i+1}",
-                    "index": i,
-                    "video_url": vid
-                })
+                    "video_url": vid,
+                    "drama_title": result["title"]
+                }
+                result["episodes"].append(ep_data)
+                result["all_episodes"].append(ep_data)
         
+        result["cover_url"] = result["cover"]
         return result
 
     @staticmethod
