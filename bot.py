@@ -61,6 +61,47 @@ class DownloaderBot:
         await self.uploader.start()
         logger.info("🚀 Background services (Pyrogram) started.")
 
+    def _generate_progress_bar(self, done, total, length=15):
+        """Generate a premium ASCII progress bar"""
+        percent = (done / total)
+        filled_length = int(length * percent)
+        bar = '█' * filled_length + '░' * (length - filled_length)
+        return f"[{bar}] {int(percent * 100)}%"
+
+    async def _update_batch_status(self, target_chat, message_id, title, done, total, mode, thread_id=None):
+        """Update batch progress message with premium styling"""
+        is_completed = (done == total)
+        status_icon = "✅ <b>Completed</b>" if is_completed else "📥 <b>Downloading...</b>"
+        progress_bar = self._generate_progress_bar(done, total)
+        
+        mode_label = {
+            "softsub": "SOFTSUB",
+            "embed": "HARD-SUB",
+            "none": "RAW",
+            "separate": "EXTERNAL-SUB"
+        }.get(mode.lower(), mode.upper())
+
+        text = (
+            f"{status_icon}\n\n"
+            f"🎬 <b>{title}</b>\n\n"
+            f"Progress: <b>{done} / {total}</b>\n"
+            f"{progress_bar}\n"
+            f"Mode: <code>{mode_label}</code>\n"
+        )
+        
+        if is_completed:
+            text += f"Status: <i>All files uploaded successfully 🚀</i>"
+        else:
+            text += f"Status: <i>Processing episode {done + 1}...</i>"
+
+        try:
+            await self.uploader.update_message(
+                target_chat, message_id, text, 
+                message_thread_id=thread_id
+            )
+        except Exception as e:
+            logger.debug(f"Progress update skipped: {e}")
+
     async def post_shutdown(self, application: Application):
         """Stop background services when bot stops"""
         await self.uploader.stop()
@@ -2402,8 +2443,15 @@ class DownloaderBot:
                             f"<i>Upload error - Episode dilewati</i>"
                         )
                         continue
-
                     successful += 1
+                    
+                    # Real-time batch progress update
+                    if is_batch:
+                        await self._update_batch_status(
+                            target_chat, status_msg.message_id, drama_title,
+                            successful + failed, len(selected_episodes), 
+                            ep_subtitle_mode, thread_id
+                        )
 
                     # ── [DUAL-DELIVERY] Kirim subtitle terpisah JIKA Indonesian tersedia ────
                     # User request: "simpan juga subtitle terpisah selain yang digabung"
@@ -2429,6 +2477,14 @@ class DownloaderBot:
                 except Exception as e:
                     logger.error(f"Upload failed for episode {episode_num}: {e}")
                     failed += 1
+                    
+                    # Update progress batch meskipun gagal
+                    if is_batch:
+                        await self._update_batch_status(
+                            target_chat, status_msg.message_id, drama_title,
+                            successful + failed, len(selected_episodes), 
+                            ep_subtitle_mode, thread_id
+                        )
                     continue
 
                 # Cleanup episode files immediately after upload
@@ -2446,16 +2502,15 @@ class DownloaderBot:
 
             # Final status
             if is_batch:
-                final_text = (
-                    f"✅ <b>Selesai: {drama_title}</b>\n\n"
-                    f"📦 Berhasil: {successful} episode\n"
-                    f"❌ Gagal: {failed} episode\n\n"
-                    f"<i>Seluruh file sementara telah dihapus.</i>"
+                await self._update_batch_status(
+                    target_chat, 
+                    status_msg.message_id, 
+                    drama_title, 
+                    successful + failed, # Total task attempted
+                    len(selected_episodes),
+                    ep_subtitle_mode,
+                    thread_id
                 )
-                try:
-                    await self.uploader.update_message(target_chat, status_msg.message_id, final_text, message_thread_id=thread_id)
-                except:
-                    await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
             else:
                 final_text = f"✅ <b>Selesai: {drama_title} — Ep {selected_episodes[0]['episode']}</b>"
                 try:
