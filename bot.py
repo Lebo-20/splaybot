@@ -656,15 +656,22 @@ class DownloaderBot:
         except Exception as e:
             logger.warning(f"  - Scan DOWNLOAD_DIR gagal: {e}")
         
-        # Hapus session
-        self.session_manager.delete_session(user_id)
-        
         # Hapus file-file
         if files_to_cleanup:
             await FileCleanup.cleanup_batch_files(files_to_cleanup, delay=0)
             logger.info(f"✅ {len(files_to_cleanup)} file dibersihkan untuk user {user_id}")
-        else:
-            logger.info(f"✅ Tidak ada file untuk dibersihkan untuk user {user_id}")
+        
+        # ── Stealth Cleanup: Hapus pesan-pesan instruksi & status ──────
+        if session and session.all_message_ids and session.chat_id:
+            logger.info(f"🧹 Menghapus {len(session.all_message_ids)} pesan untuk user {user_id}")
+            for msg_id in session.all_message_ids:
+                try:
+                    await context.bot.delete_message(chat_id=session.chat_id, message_id=msg_id)
+                except Exception:
+                    pass
+        
+        # Hapus session
+        self.session_manager.delete_session(user_id)
     
     def extract_title_episode(self, data: Dict[str, Any], filename: str = "") -> Tuple[str, str, bool]:
         """Extract title, episode, and subtitle availability from JSON data"""
@@ -1132,7 +1139,8 @@ class DownloaderBot:
             self.session_manager.create_session(
                 user_id, data, str(json_path),
                 chat_id=update.effective_chat.id,
-                message_thread_id=update.effective_message.message_thread_id
+                message_thread_id=update.effective_message.message_thread_id,
+                trigger_message_id=update.effective_message.message_id
             )
 
             # ── Gunakan Universal Parser yang telah ditingkatkan ──────────────────
@@ -1352,7 +1360,8 @@ class DownloaderBot:
             self.session_manager.create_session(
                 user_id, data, str(json_path),
                 chat_id=update.effective_chat.id,
-                message_thread_id=update.effective_message.message_thread_id
+                message_thread_id=update.effective_message.message_thread_id,
+                trigger_message_id=update.effective_message.message_id
             )
             
             # Use universal parser to detect if it's a streaming JSON

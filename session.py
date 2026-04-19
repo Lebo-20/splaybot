@@ -25,6 +25,7 @@ class UserSession:
     progress_message_id: Optional[int] = None
     chat_id: Optional[int] = None
     message_thread_id: Optional[int] = None
+    trigger_message_id: Optional[int] = None
     # Daftar pesan yang dikirim bot selama session ini (untuk dihapus di akhir)
     all_message_ids: List[int] = field(default_factory=list)
     
@@ -48,8 +49,11 @@ class SessionManager:
     def __init__(self):
         self.sessions: Dict[int, UserSession] = {}
     
-    def create_session(self, user_id: int, json_data: Dict[str, Any], json_file_path: str = None, 
-                       chat_id: int = None, message_thread_id: int = None) -> UserSession:
+    def create_session(self, user_id: int, json_data: Dict[str, Any], 
+                       json_file_path: Optional[str] = None, 
+                       chat_id: Optional[int] = None,
+                       message_thread_id: Optional[int] = None,
+                       trigger_message_id: Optional[int] = None) -> UserSession:
         """Create new session for user"""
         self.cleanup_expired()
         
@@ -64,8 +68,12 @@ class SessionManager:
             json_data=json_data,
             json_file_path=json_file_path,
             chat_id=chat_id,
-            message_thread_id=message_thread_id
+            message_thread_id=message_thread_id,
+            trigger_message_id=trigger_message_id
         )
+        if trigger_message_id:
+            session.add_message(trigger_message_id)
+            
         self.sessions[user_id] = session
         logger.info(f"Created new session for user {user_id} with job_id {session.job_id}")
         return session
