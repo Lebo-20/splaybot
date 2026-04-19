@@ -49,15 +49,31 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 SOURCE_HEADERS = {
     "flickreels": {
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6 Build/SD1A.210817.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/121.0.6167.101 Mobile Safari/537.36",
-        "Referer": "https://pages.farsunpteltd.com/",
-        "Origin": "https://pages.farsunpteltd.com/"
+        "Referer": "https://www.flickreels.net/",
+        "Origin": "https://www.flickreels.net/",
+        "Accept": "*/*",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
     },
     "farsunpteltd": {
         "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6 Build/SD1A.210817.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/121.0.6167.101 Mobile Safari/537.36",
-        "Referer": "https://pages.farsunpteltd.com/",
-        "Origin": "https://pages.farsunpteltd.com/",
+        "Referer": "https://www.flickreels.net/",
+        "Origin": "https://www.flickreels.net/",
         "Accept": "*/*",
-        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
+    },
+    "zshipricf": {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6 Build/SD1A.210817.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/121.0.6167.101 Mobile Safari/537.36",
+        "Referer": "https://www.flickreels.net/",
+        "Origin": "https://www.flickreels.net/",
+        "Accept": "*/*",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "cross-site",
     }
 }
 
@@ -864,17 +880,25 @@ class JSONParser:
                     logger.info(f"Detected FlickReels format")
                     drama_title = data["data"].get("title", "Drama")
                     
-                    # Try to extract base media host for relative origin_down_url
+                    # Try to extract base media host and common verify token
                     base_media_host = ""
+                    common_token = ""
                     for it in items:
-                        if isinstance(it, dict) and it.get("hls_url"):
-                            parsed = urlparse(it["hls_url"])
-                            base_media_host = f"{parsed.scheme}://{parsed.netloc}"
-                            break
+                        if not isinstance(it, dict): continue
+                        test_url = it.get("hls_url") or it.get("origin_down_url")
+                        if test_url and test_url.startswith("http"):
+                            parsed = urlparse(test_url)
+                            if not base_media_host:
+                                base_media_host = f"{parsed.scheme}://{parsed.netloc}"
+                            if "verify=" in test_url:
+                                match = re.search(r'verify=([^&]+)', test_url)
+                                if match:
+                                    common_token = match.group(1)
+                                    break
+                    
                     if not base_media_host and data["data"].get("cover"):
                         parsed = urlparse(data["data"]["cover"])
-                        # Often cover is on separate CDN, but let's try
-                        host = parsed.netloc.replace("zshipubcdn", "zshipricf") # Heuristic for this specific provider
+                        host = parsed.netloc.replace("zshipubcdn", "zshipricf")
                         base_media_host = f"{parsed.scheme}://{host}"
 
                     for idx, item in enumerate(items):
@@ -882,12 +906,14 @@ class JSONParser:
                         ep_num = str(item.get("chapter_num", idx + 1))
                         v_url = item.get("hls_url") or item.get("origin_down_url")
                         
-                        if v_url and v_url.startswith("/"):
-                            if base_media_host:
-                                v_url = urljoin(base_media_host, v_url)
-                            else:
-                                # Fallback if no host found
-                                v_url = urljoin("https://zshipricf.farsunpteltd.com", v_url)
+                        if v_url:
+                            if v_url.startswith("/"):
+                                v_url = urljoin(base_media_host or "https://zshipricf.farsunpteltd.com", v_url)
+                            
+                            # Persist the verify token to MP4/HLS if it's missing but we found it elsewhere
+                            if common_token and "verify=" not in v_url:
+                                separator = "&" if "?" in v_url else "?"
+                                v_url = f"{v_url}{separator}verify={common_token}"
 
                         if v_url:
                             ep_info = {
