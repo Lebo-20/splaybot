@@ -1015,14 +1015,6 @@ class DownloaderBot:
         if not self.uploader:
             self.uploader = TelegramUploader(context.bot)
         
-        # Cek session aktif
-        if self.session_manager.has_active_session(user_id):
-            await update.message.reply_text(
-                "⚠️ Masih ada proses yang berjalan. Harap tunggu hingga selesai.\n"
-                "Ketik /cancel untuk membatalkan proses sebelumnya."
-            )
-            return ConversationHandler.END
-        
         json_path = None
         url_fetched_path = context.user_data.pop('url_fetched_path', None)
         
@@ -1220,10 +1212,6 @@ class DownloaderBot:
         url = update.message.text.strip()
         
         if not url.startswith(('http://', 'https://')):
-            return
-            
-        if self.session_manager.has_active_session(user_id):
-            await update.message.reply_text("⚠️ Masih ada proses berjalan.")
             return
 
         status_msg = await update.message.reply_text("🌐 <b>Menganalisa URL...</b>", parse_mode="HTML")
@@ -1705,13 +1693,6 @@ class DownloaderBot:
         user_fmt = context.user_data.get("default_format", "mp4").lower()
         filename = f"{user_title}.{user_fmt}"
 
-        if self.session_manager.has_active_session(user_id):
-            await update.message.reply_text(
-                "⚠️ Masih ada proses yang sedang berjalan.\n"
-                "Tunggu hingga selesai atau ketik /cancel untuk membatalkan."
-            )
-            return ConversationHandler.END
-
         # ── Label sumber untuk pesan status ──────────────────────────────────
         source_label = self._detect_source_label(raw_url)
 
@@ -1927,13 +1908,6 @@ class DownloaderBot:
 
         series_title = self._sanitize_filename(" ".join(title_parts)) if title_parts else "Series"
         total        = len(urls)
-
-        if self.session_manager.has_active_session(user_id):
-            await update.message.reply_text(
-                "⚠️ Masih ada proses yang sedang berjalan.\n"
-                "Tunggu hingga selesai atau ketik /cancel untuk membatalkan."
-            )
-            return ConversationHandler.END
 
         if not self.uploader:
             self.uploader = TelegramUploader(context.bot)
