@@ -609,6 +609,16 @@ class DownloaderBot:
                     episode = str(first_ep.get("episodeNo") or first_ep.get("episodeNumber", "1"))
                 return title, episode, False
 
+            # ── FlickReels (Flikreels) format ────────────────────────────────
+            if "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
+                info = data["data"]
+                title = info.get("title", "Video")
+                items = info.get("list", [])
+                if items:
+                    first_ep = items[0]
+                    episode = str(first_ep.get("chapter_num", "1"))
+                return title, episode, False
+
             # Dramaflickreels format
             if "drama" in data and "episodes" in data:
                 drama_info = data["drama"]
@@ -701,7 +711,7 @@ class DownloaderBot:
                         break
             
             if not episode:
-                for field in ["episode", "chapter", "index", "chapterIndex", "episode_num"]:
+                for field in ["episode", "chapter", "index", "chapterIndex", "episode_num", "chapter_num"]:
                     if field in data:
                         episode = str(data[field])
                         if field == "chapterIndex":

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Tuple, List, Union, Callable
 import aiofiles
 import aiohttp
+from urllib.parse import urlparse, urljoin
 
 from config import (
     SUPPORTED_SOURCES, CLEANUP_DELAY, CLEANUP_ON_ERROR,
@@ -849,22 +850,52 @@ class JSONParser:
                         episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
                         return episodes
 
-            # ── Flikreels format ─────────────────────────────────────────────
+            # ── FlickReels (Flikreels) format ────────────────────────────────
             if "data" in data and isinstance(data["data"], dict) and "list" in data["data"]:
                 items = data["data"]["list"]
-                if items and isinstance(items, list) and any("hls_url" in it for it in items if isinstance(it, dict)):
-                    logger.info(f"Detected flikreels format")
+                if items and isinstance(items, list) and any(("hls_url" in it or "origin_down_url" in it) for it in items if isinstance(it, dict)):
+                    logger.info(f"Detected FlickReels format")
+                    drama_title = data["data"].get("title", "Drama")
+                    
+                    # Try to extract base media host for relative origin_down_url
+                    base_media_host = ""
+                    for it in items:
+                        if isinstance(it, dict) and it.get("hls_url"):
+                            parsed = urlparse(it["hls_url"])
+                            base_media_host = f"{parsed.scheme}://{parsed.netloc}"
+                            break
+                    if not base_media_host and data["data"].get("cover"):
+                        parsed = urlparse(data["data"]["cover"])
+                        # Often cover is on separate CDN, but let's try
+                        host = parsed.netloc.replace("zshipubcdn", "zshipricf") # Heuristic for this specific provider
+                        base_media_host = f"{parsed.scheme}://{host}"
+
                     for idx, item in enumerate(items):
                         if not isinstance(item, dict): continue
                         ep_num = str(item.get("chapter_num", idx + 1))
-                        v_url = item.get("hls_url")
+                        v_url = item.get("hls_url") or item.get("origin_down_url")
+                        
+                        if v_url and v_url.startswith("/"):
+                            if base_media_host:
+                                v_url = urljoin(base_media_host, v_url)
+                            else:
+                                # Fallback if no host found
+                                v_url = urljoin("https://zshipricf.farsunpteltd.com", v_url)
+
                         if v_url:
-                            episodes.append({
+                            ep_info = {
                                 "episode": ep_num,
                                 "title": item.get("chapter_title", f"Episode {ep_num}"),
+                                "drama_title": drama_title,
                                 "url": v_url,
-                                "source": "flikreels"
-                            })
+                                "source": "flickreels"
+                            }
+                            # Check for cover
+                            if item.get("chapter_cover"):
+                                ep_info["cover_url"] = item.get("chapter_cover")
+                            
+                            episodes.append(ep_info)
+                    
                     if episodes:
                         episodes.sort(key=lambda x: int(x["episode"]) if x["episode"].isdigit() else 0)
                         return episodes
@@ -1012,18 +1043,36 @@ class JSONParser:
                             "subtitle_url": None
                         })
             
-            # Flikreels format
+            # FlickReels format
             elif "data" in data and "list" in data["data"]:
                 data_list = data["data"]["list"]
                 if isinstance(data_list, list):
-                    for item in data_list:
+                    drama_title = data["data"].get("title", "Drama")
+                    # Try to extract base media host
+                    base_media_host = ""
+                    for it in data_list:
+                        if isinstance(it, dict) and it.get("hls_url"):
+                            parsed = urlparse(it["hls_url"])
+                            base_media_host = f"{parsed.scheme}://{parsed.netloc}"
+                            break
+                    
+                    for idx, item in enumerate(data_list):
                         if not isinstance(item, dict): continue
-                        if "hls_url" in item and item["hls_url"]:
-                            episode_num = str(item.get("chapter_num", ""))
+                        v_url = item.get("hls_url") or item.get("origin_down_url")
+                        if not v_url: continue
+                        
+                        episode_num = str(item.get("chapter_num", idx + 1))
+                        if v_url.startswith("/"):
+                            if base_media_host:
+                                v_url = urljoin(base_media_host, v_url)
+                            else:
+                                v_url = urljoin("https://zshipricf.farsunpteltd.com", v_url)
+                                
                         episodes.append({
                             "episode": episode_num,
                             "title": item.get("chapter_title", f"Episode {episode_num}"),
-                            "url": item["hls_url"],
+                            "drama_title": drama_title,
+                            "url": v_url,
                             "subtitle_url": None
                         })
             
