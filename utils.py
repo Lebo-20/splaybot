@@ -445,29 +445,41 @@ class SubtitleDetector:
     
     @staticmethod
     def is_indonesian_subtitle(subtitle_data: Dict[str, Any]) -> bool:
-        """Check if subtitle data is for Indonesian language"""
+        """Check if subtitle data is for Indonesian language - AGGRESSIVE for DramaWave"""
+        if not subtitle_data or not isinstance(subtitle_data, dict):
+            return False
+            
+        # Priority 1: Check display_name or name for "Indonesia"
+        for field in ["display_name", "name", "label", "title"]:
+            if field in subtitle_data and subtitle_data[field]:
+                val = str(subtitle_data[field]).lower().strip()
+                if val == "indonesia" or val == "bahasa indonesia" or val == "indonesian":
+                    logger.info(f"[SUB-DETECTION] Direct match found: {field}='{val}'")
+                    return True
+
+        # Priority 2: Check language codes
         language_fields = [
             "language", "lang", "language_code", "lang_code", 
             "code", "languageId", "lang_id", "sub_lang", "subtitle_lang",
-            "locale", "language_name", "name", "display_name", "title", "label"
+            "locale"
         ]
         
         for field in language_fields:
             if field in subtitle_data and subtitle_data[field]:
                 value = str(subtitle_data[field]).lower().strip()
-                # Check for exact matches and inclusion
+                # Check against our comprehensive list
                 for code in INDONESIAN_SUBTITLE_CODES:
                     code_lower = code.lower()
-                    if value == code_lower or f"({code_lower})" in value or f" {code_lower}" in value:
-                        logger.info(f"[SUB-DETECTION] Match found: {field}='{value}' corresponds to Indonesian ({code})")
+                    if value == code_lower or f"({code_lower})" in value:
+                        logger.info(f"[SUB-DETECTION] Code match found: {field}='{value}' -> {code}")
                         return True
         
-        # Additional check in URI/URL if no field matches
+        # Priority 3: Pattern matching in URL
         url = SubtitleDetector.get_subtitle_url(subtitle_data)
         if url:
             url_lower = url.lower()
-            if any(f"_{c}." in url_lower or f"-{c}." in url_lower or f"/{c}/" in url_lower for c in ["id", "ind", "indo"]):
-                logger.info(f"[SUB-DETECTION] Match found in URL: Indonesian pattern detected in {url}")
+            if any(p in url_lower for p in ["_id.", "-id.", "/id/", "_ind.", "indonesian", "bahasa"]):
+                logger.info(f"[SUB-DETECTION] URL pattern match: {url}")
                 return True
         
         return False
