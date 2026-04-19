@@ -2523,9 +2523,15 @@ class DownloaderBot:
             else:
                 final_text = f"✅ <b>Selesai: {drama_title} — Ep {selected_episodes[0]['episode']}</b>"
                 try:
+                    # Kirim sebagai pesan baru (Notifikasi)
+                    await context.bot.send_message(
+                        chat_id=target_chat, text=final_text, 
+                        parse_mode="HTML", message_thread_id=thread_id
+                    )
+                    # Update juga status terakhir
                     await self.uploader.update_message(target_chat, status_msg.message_id, final_text, message_thread_id=thread_id)
                 except:
-                    await context.bot.send_message(chat_id=target_chat, text=final_text, parse_mode="HTML", message_thread_id=thread_id)
+                    pass
 
         except Exception as e:
             logger.error(f"Error in batch processing: {e}")
