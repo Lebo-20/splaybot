@@ -91,16 +91,25 @@ class DownloaderBot:
         
         if is_completed:
             text += f"Status: <i>All files uploaded successfully 🚀</i>"
+            try:
+                # Kirim sebagai pesan baru saat selesai agar ada notifikasi muncul ke user
+                await self.uploader.bot.send_message(
+                    chat_id=target_chat, text=text, 
+                    parse_mode="HTML", message_thread_id=thread_id
+                )
+                # Opsional: Update juga pesan status terakhir agar sinkron
+                await self.uploader.update_message(target_chat, message_id, text, message_thread_id=thread_id)
+            except Exception as e:
+                logger.error(f"Failed to send completion message: {e}")
         else:
             text += f"Status: <i>Processing episode {done + 1}...</i>"
-
-        try:
-            await self.uploader.update_message(
-                target_chat, message_id, text, 
-                message_thread_id=thread_id
-            )
-        except Exception as e:
-            logger.debug(f"Progress update skipped: {e}")
+            try:
+                await self.uploader.update_message(
+                    target_chat, message_id, text, 
+                    message_thread_id=thread_id
+                )
+            except Exception as e:
+                logger.debug(f"Progress update skipped: {e}")
 
     async def post_shutdown(self, application: Application):
         """Stop background services when bot stops"""
