@@ -48,9 +48,16 @@ logging.getLogger("apscheduler").setLevel(logging.WARNING)
 # Headers for specific sources
 SOURCE_HEADERS = {
     "flickreels": {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://www.flickreels.net/",
-        "Origin": "https://www.flickreels.net/"
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6 Build/SD1A.210817.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/121.0.6167.101 Mobile Safari/537.36",
+        "Referer": "https://pages.farsunpteltd.com/",
+        "Origin": "https://pages.farsunpteltd.com/"
+    },
+    "farsunpteltd": {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 12; Pixel 6 Build/SD1A.210817.036; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/121.0.6167.101 Mobile Safari/537.36",
+        "Referer": "https://pages.farsunpteltd.com/",
+        "Origin": "https://pages.farsunpteltd.com/",
+        "Accept": "*/*",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7"
     }
 }
 

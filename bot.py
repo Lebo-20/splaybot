@@ -516,10 +516,12 @@ class DownloaderBot:
                 await status_msg.edit_text(
                     f"✅ <b>Update berhasil!</b>\n\n"
                     f"<code>{output[:300]}</code>\n\n"
-                    f"🔄 Bot perlu direstart untuk menerapkan perubahan.",
+                    f"🔄 <b>Bot akan merestart otomatis dalam 3 detik untuk menerapkan perubahan...</b>",
                     parse_mode="HTML"
                 )
-                logger.info(f"Update pulled successfully: {output}")
+                logger.info(f"Auto-restart initiated after update")
+                await asyncio.sleep(3)
+                os.execl(sys.executable, sys.executable, *sys.argv)
         except Exception as e:
             await status_msg.edit_text(f"❌ <b>Gagal update:</b>\n<code>{str(e)}</code>", parse_mode="HTML")
 
