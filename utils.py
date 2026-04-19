@@ -150,6 +150,41 @@ class JSONParser:
                 if result["episodes"]:
                     return result
 
+            # Check for DramaWave format
+            # Path: data -> info -> episode_list
+            if "data" in data and isinstance(data["data"], dict) and "info" in data["data"]:
+                info = data["data"]["info"]
+                if "episode_list" in info:
+                    result["title"] = info.get("name", result["title"])
+                    result["cover"] = info.get("cover")
+                    result["description"] = info.get("desc")
+                    result["source"] = "dramawave"
+                    
+                    for idx, ep in enumerate(info["episode_list"]):
+                        ep_num = str(idx + 1)
+                        v_url = ep.get("external_audio_h264_m3u8") or ep.get("m3u8_url") or ep.get("video_url")
+                        
+                        sub_url = None
+                        sub_list = ep.get("subtitle_list")
+                        if isinstance(sub_list, list):
+                            indo_sub = SubtitleDetector.find_indonesian_subtitle(sub_list)
+                            if indo_sub:
+                                sub_url = SubtitleDetector.get_subtitle_url(indo_sub)
+                        
+                        if v_url:
+                            result["episodes"].append({
+                                "id": ep.get("id", ep_num),
+                                "episode": ep_num,
+                                "name": ep.get("name") or f"Episode {ep_num}",
+                                "video_url": v_url,
+                                "subtitle_url": sub_url,
+                                "cover": ep.get("cover")
+                            })
+                    
+                    if result["episodes"]:
+                        logger.info(f"Detected DramaWave format with {len(result['episodes'])} episodes")
+                        return result
+
         # General recursive search fallback
         all_videos = []
         all_subs = []
