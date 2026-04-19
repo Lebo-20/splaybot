@@ -157,8 +157,8 @@ class TelegramUploader:
                 return
             except Exception as e:
                 error_str = str(e).lower()
-                # Jika pesan hilang/dihapus (404), kirim pesan baru (Smart Resend)
-                if "not found" in error_str or "message can't be found" in error_str:
+                # Jika pesan hilang (404) atau tidak bisa diedit, kirim pesan baru (Smart Resend)
+                if any(x in error_str for x in ["not found", "message can't be found", "can't be edited"]):
                     try:
                         return await self.bot.send_message(
                             chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, 
