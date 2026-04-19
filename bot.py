@@ -110,6 +110,21 @@ class DownloaderBot:
                 )
             except Exception as e:
                 logger.debug(f"Progress update skipped: {e}")
+        
+        # Pin saat mulai (if not already pinned)
+        if done == 0:
+            try:
+                await self.uploader.bot.pin_chat_message(
+                    chat_id=target_chat, message_id=message_id,
+                    disable_notification=True
+                )
+            except Exception: pass
+            
+        # Unpin saat selesai
+        if is_completed:
+            try:
+                await self.uploader.bot.unpin_chat_message(chat_id=target_chat, message_id=message_id)
+            except Exception: pass
 
     async def post_shutdown(self, application: Application):
         """Stop background services when bot stops"""
@@ -1788,8 +1803,17 @@ class DownloaderBot:
             f"🎬 <b>Judul:</b> {user_title}\n"
             f"🔗 <b>Sumber:</b> {source_label}\n"
             f"⏳ Mengambil playlist dan segmen video...",
-            parse_mode="HTML"
+            parse_mode="HTML",
+            message_thread_id=update.effective_message.message_thread_id
         )
+        
+        # Pin status message
+        try:
+            await context.bot.pin_chat_message(
+                chat_id=update.effective_chat.id,
+                message_id=detect_msg.message_id
+            )
+        except Exception: pass
 
         subtitle_tracks: List[dict] = []
         sub_url = ""
@@ -2530,6 +2554,14 @@ class DownloaderBot:
                     )
                     # Update juga status terakhir
                     await self.uploader.update_message(target_chat, status_msg.message_id, final_text, message_thread_id=thread_id)
+                    
+                    # Unpin single status message
+                    try:
+                        await context.bot.unpin_chat_message(
+                            chat_id=target_chat,
+                            message_id=status_msg.message_id
+                        )
+                    except Exception: pass
                 except:
                     pass
 
